@@ -1,7 +1,46 @@
 Flask
+requests
 numpy
 torch
 gunicorn
-
-librosa
+fastapi 
+uvicorn
+pydantic
+pydantic[email]
+typing-extensions
+langchain 
+langchain_groq
+langchain-core
+pymongo
+librosa==0.10.1
+numba==0.56.4
 scipy
+uvicorn
+
+
+bs4
+
+# File Handling
+python-docx
+python-pptx
+PyPDF2
+
+
+zipfile36  # For zipfile support (older environments)
+
+# Machine Learning & Transformers
+
+transformers
+
+# LangChain & Related
+langchain-community
+
+# Hugging Face Embeddings & FAISS
+faiss-cpu  # for CPU-based FAISS usage
+sentence-transformers
+
+# Pydantic
+pydantic
+
+# Optional: if using OpenAI or Groq
+openai
