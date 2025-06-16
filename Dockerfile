@@ -52,7 +52,7 @@ ENV NUMBA_DISABLE_CACHE=1
 #   - 'your_app' should be the name of your main Python file (without the .py extension).
 #   - 'app' should be the name of your Flask application instance
 #     (e.g., app = flask.Flask(__name__)).
-CMD ["gunicorn", "--workers", "4", "--timeout", "300000", "--bind", "0.0.0.0:7860", "--worker-class", "uvicorn.workers.UvicornWorker", "flask_Character:app"]
+CMD ["gunicorn", "--workers", "4", "--timeout", "300", "--bind", "0.0.0.0:7860", "flask_Character:app"]
 # Important Note:
 # Before building your Docker image, make sure to remove the following block
 # from your main Flask application file (your_app.py):
