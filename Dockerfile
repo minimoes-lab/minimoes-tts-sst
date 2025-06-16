@@ -36,6 +36,7 @@ RUN pip install -r requirements.txt
 # This includes your main Flask file (your_app.py), the utils directory,
 # the model files (utils/model/model.pth, utils/model/model.py), etc.
 COPY . /app
+RUN mkdir -p /app/generated_audio && chown -R 1000:1000 /app/generated_audio
 
 # Expose the port your Flask app will run on
 # This instruction informs Docker that the container listens on port 7860.
