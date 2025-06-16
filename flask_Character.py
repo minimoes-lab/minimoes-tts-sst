@@ -58,8 +58,9 @@ print("Activated device:", device)
 model_path = 'utils/model/model.pth'
 blendshape_model = load_model(model_path, config, device)
 
-@app.route('/audio_to_blendshapes', methods=['POST'])
-def audio_to_blendshapes_route():
+@app.post("/audio_to_blendshapes")
+async def audio_to_blendshapes_route(request: Request):
+
     audio_bytes = request.data
     generated_facial_data = generate_facial_data_from_bytes(audio_bytes, blendshape_model, device, config)
     generated_facial_data_list = generated_facial_data.tolist() if isinstance(generated_facial_data, np.ndarray) else generated_facial_data
@@ -73,16 +74,6 @@ def audio_to_blendshapes_route():
 
 
 
-app = FastAPI(
-    title="Intelligent Document & Web API",
-    description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
-    version="2.0.1" # Version updated
-)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print("Activated device:", device)
-
-model_path = 'utils/model/model.pth'
-blendshape_model = load_model(model_path, config, device)
 
 
 # =====================================================================================
