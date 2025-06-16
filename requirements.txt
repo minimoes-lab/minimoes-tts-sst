@@ -19,7 +19,7 @@ uvicorn
 pandas
 
 bs4
-
+python-multipart
 # File Handling
 python-docx
 python-pptx
