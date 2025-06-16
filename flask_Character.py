@@ -61,11 +61,12 @@ blendshape_model = load_model(model_path, config, device)
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
 
-    audio_bytes = request.data
+    audio_bytes = await request.body()    
     generated_facial_data = generate_facial_data_from_bytes(audio_bytes, blendshape_model, device, config)
     generated_facial_data_list = generated_facial_data.tolist() if isinstance(generated_facial_data, np.ndarray) else generated_facial_data
 
-    return jsonify({'blendshapes': generated_facial_data_list})
+    return JSONResponse(content={'blendshapes': generated_facial_data_list})
+
 
 
 # This software is licensed under a **dual-license model**
