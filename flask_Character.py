@@ -68,9 +68,8 @@ async def audio_to_blendshapes_route(request: Request):
     return JSONResponse(content={'blendshapes': generated_facial_data_list})
 
 
+STATIC_AUDIO_DIR = "/app/generated_audio"
 
-STATIC_AUDIO_DIR = "/tmp/generated_audio"
-os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
 
 
 # This software is licensed under a **dual-license model**
