@@ -3,6 +3,7 @@
 # Using a specific version tag (like 3.9-slim) is recommended for stability
 # and to ensure your build is reproducible.
 FROM python:3.9-slim
+RUN mkdir -p /app/generated_audio && chmod -R 777 /app/generated_audio
 
 # Set environment variables
 # These environment variables are commonly used for Python applications
