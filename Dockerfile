@@ -3,7 +3,6 @@
 # Using a specific version tag (like 3.9-slim) is recommended for stability
 # and to ensure your build is reproducible.
 FROM python:3.9-slim
-RUN mkdir -p /app/generated_audio && chmod -R 777 /app/generated_audio
 
 # Set environment variables
 # These environment variables are commonly used for Python applications
@@ -36,6 +35,7 @@ RUN pip install -r requirements.txt
 # This includes your main Flask file (your_app.py), the utils directory,
 # the model files (utils/model/model.pth, utils/model/model.py), etc.
 COPY . /app
+RUN mkdir -p /app/generated_audio && chmod -R 777 /app/generated_audio
 
 # Expose the port your Flask app will run on
 # This instruction informs Docker that the container listens on port 7860.
