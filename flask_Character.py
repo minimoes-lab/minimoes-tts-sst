@@ -69,6 +69,10 @@ async def audio_to_blendshapes_route(request: Request):
 
 
 
+STATIC_AUDIO_DIR = "/tmp/generated_audio"
+os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
+
+
 # This software is licensed under a **dual-license model**
 # For individuals and businesses earning **under $1M per year**, this software is licensed under the **MIT License**
 
