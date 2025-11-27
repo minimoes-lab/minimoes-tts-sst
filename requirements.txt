@@ -31,7 +31,7 @@ zipfile36  # For zipfile support (older environments)
 # Machine Learning & Transformers
 
 transformers
-
+sentence-transformers==2.2.2
 # LangChain & Related
 langchain-community
 
