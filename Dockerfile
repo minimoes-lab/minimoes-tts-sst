@@ -25,4 +25,5 @@ USER appuser
 EXPOSE 7860
 ENV NUMBA_DISABLE_CACHE=1
 
-CMD ["gunicorn", "--workers", "1", "--timeout", "300000", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:7860", "flask_Character:app"]
+# ✅ Updated CMD for FastAPI
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860"]
