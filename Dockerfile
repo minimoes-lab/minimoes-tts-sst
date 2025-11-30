@@ -1,5 +1,9 @@
 FROM python:3.9-slim
 
+# Create appuser and app directory
+RUN useradd -ms /bin/bash appuser
+RUN mkdir -p /app/generated_audio
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
     PIP_DISABLE_PIP_VERSION_CHECK=on \
@@ -12,8 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
+# Set permissions
+RUN chown -R appuser:appuser /app
+
+# Switch to appuser
+USER appuser
+
 EXPOSE 7860
 ENV NUMBA_DISABLE_CACHE=1
 
-# FastAPI CMD
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
+CMD ["gunicorn", "--workers", "1", "--timeout", "300000", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:7860", "api:app"]
