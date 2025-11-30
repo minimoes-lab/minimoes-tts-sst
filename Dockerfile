@@ -25,4 +25,4 @@ USER appuser
 EXPOSE 7860
 ENV NUMBA_DISABLE_CACHE=1
 
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860"]
