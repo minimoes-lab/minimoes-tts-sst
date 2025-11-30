@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+
 
 # Create appuser and app directory
 RUN useradd -ms /bin/bash appuser
