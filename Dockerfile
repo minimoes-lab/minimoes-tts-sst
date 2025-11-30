@@ -19,7 +19,6 @@ COPY . /app
 # Set permissions
 RUN chown -R appuser:appuser /app
 
-# Switch to appuser
 USER appuser
 
 EXPOSE 7860
