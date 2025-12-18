@@ -1,7 +1,8 @@
-
+# flask_Character.py
 # This software is licensed under a **dual-license model**
 # For individuals and businesses earning **under $1M per year**, this software is licensed under the **MIT License**
 # Businesses or organizations with **annual revenue of $1,000,000 or more** must obtain permission to use this software commercially.
+
 from fastapi import Request  # Capital "R" for FastAPI
 from fastapi.responses import JSONResponse
 from datetime import datetime
@@ -11,7 +12,6 @@ import base64
 import os
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-import os
 import uuid
 import shutil
 import uvicorn
@@ -21,7 +21,7 @@ import tempfile
 import threading
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -48,48 +48,83 @@ from langchain.prompts import PromptTemplate
 # 1. API Initialization & Configuration
 # =====================================================================================
 
-
+# Keep the import of helper functions - these remain, but model loading will be lazy
 from utils.generate_face_shapes import generate_facial_data_from_bytes
-from utils.model.model import load_model
+from utils.model.model import load_model  # we will call this only inside lazy loader
 from utils.config import config
 
 app = FastAPI(
     title="Intelligent Document & Web API",
     description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
-    version="2.0.1" # Version updated
+    version="2.0.1"  # Version updated
 )
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print("Activated device:", device)
 
-model_path = 'utils/model/model.pth'
-blendshape_model = load_model(model_path, config, device)
+# IMPORTANT: Do NOT load any heavy models or call torch.device() at import time.
+# Lazy loading pattern below will handle the blendshape model safely.
 
-@app.post("/audio_to_blendshapes")
-async def audio_to_blendshapes_route(request: Request):
+# -----------------------------------------------------------------------------
+# Global placeholders for lazy-loaded blendshape model
+# -----------------------------------------------------------------------------
+_blendshape_model = None
+_blendshape_device = None
 
-    audio_bytes = await request.body()    
-    generated_facial_data = generate_facial_data_from_bytes(audio_bytes, blendshape_model, device, config)
-    generated_facial_data_list = generated_facial_data.tolist() if isinstance(generated_facial_data, np.ndarray) else generated_facial_data
+def get_blendshape_model():
+    """
+    Lazy-load the blendshape model on first use.
+    Also applies a temporary torch.load wrapper to ensure weights_only=False
+    (compatibility for PyTorch 2.6+ where weights_only default changed).
+    """
+    global _blendshape_model, _blendshape_device
 
-    return JSONResponse(content={'blendshapes': generated_facial_data_list})
+    if _blendshape_model is not None:
+        return _blendshape_model, _blendshape_device
 
+    import torch as _torch
+    from utils.model.model import load_model as _load_model
 
-STATIC_AUDIO_DIR = "/app/generated_audio"
+    device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
+    model_path = "utils/model/model.pth"
 
+    print(f"[{datetime.now()}] Loading blendshape model on {device} from {model_path} ...")
 
+    # Monkeypatch torch.load temporarily to force weights_only=False if not provided.
+    orig_torch_load = _torch.load
 
-# This software is licensed under a **dual-license model**
-# For individuals and businesses earning **under $1M per year**, this software is licensed under the **MIT License**
+    def torch_load_wrapper(f, *args, **kwargs):
+        # ensure weights_only=False unless explicitly set; safe because file must be trusted.
+        if "weights_only" not in kwargs:
+            kwargs["weights_only"] = False
+        return orig_torch_load(f, *args, **kwargs)
 
+    _torch.load = torch_load_wrapper
+    try:
+        # Call the project's loader. It may call torch.load internally; our wrapper handles it.
+        _blendshape_model = _load_model(model_path, config, device)
+        _blendshape_device = device
+        print(f"[{datetime.now()}] Blendshape model loaded successfully.")
+    except Exception as e:
+        # give a very explicit error to help debugging
+        print(f"[{datetime.now()}] ERROR loading blendshape model: {repr(e)}")
+        # Restore torch.load before raising
+        _torch.load = orig_torch_load
+        raise
+    finally:
+        # Always restore original torch.load (important).
+        _torch.load = orig_torch_load
 
+    return _blendshape_model, _blendshape_device
 
+# -----------------------------------------------------------------------------
+# Static audio dir
+# -----------------------------------------------------------------------------
+STATIC_AUDIO_DIR = "generated_audio"
+os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
 
+# =====================================================================================
+# Configuration & Global State for RAG + TTS
+# =====================================================================================
 
-
-
-
-
-# --- Configuration & Global State ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is not set. Please set it as an environment variable.")
@@ -128,9 +163,8 @@ You are a highly intelligent and diligent AI research assistant. Your primary go
 RAG_PROMPT = PromptTemplate.from_template(PROFESSIONAL_RAG_PROMPT_TEMPLATE)
 
 # =====================================================================================
-# 3. Model Loading (at Startup)
+# 3. Model Loading (at Startup) -- only for Bark + Embeddings (safe)
 # =====================================================================================
-from fastapi.responses import PlainTextResponse
 
 @app.get("/tts_diagnose")
 async def tts_diagnose():
@@ -170,19 +204,29 @@ async def tts_diagnose():
     import json
     return PlainTextResponse(json.dumps(debug, indent=2))
 
+
 @app.on_event("startup")
 async def load_models():
-    """Load heavy ML models once when the API starts up."""
+    """Load heavy ML models once when the API starts up: embeddings + Bark TTS (safe)."""
     global embeddings_model, bark_processor, bark_model, bark_sr, bark_device, bark_available
 
     print(f"[{datetime.now()}] Starting model loading...")
-    
-    print(f"[{datetime.now()}] Loading HuggingFace embeddings model...")
-    embeddings_start_time = time.time()
-    embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'})
-    embeddings_end_time = time.time()
-    print(f"[{datetime.now()}] Embeddings model loaded successfully in {embeddings_end_time - embeddings_start_time:.2f} seconds.")
 
+    # ---- Embeddings (lightweight in many deployments) ----
+    try:
+        print(f"[{datetime.now()}] Loading HuggingFace embeddings model...")
+        embeddings_start_time = time.time()
+        embeddings_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+        )
+        embeddings_end_time = time.time()
+        print(f"[{datetime.now()}] Embeddings model loaded successfully in {embeddings_end_time - embeddings_start_time:.2f} seconds.")
+    except Exception as e:
+        print(f"[{datetime.now()}] Failed to load embeddings model: {e}")
+        embeddings_model = None  # keep service alive, RAG endpoints will raise clear error
+
+    # ---- Bark TTS ----
     try:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[{datetime.now()}] Using device for Bark TTS: {device_str}")
@@ -200,13 +244,15 @@ async def load_models():
         bark_model_end_time = time.time()
         print(f"[{datetime.now()}] Bark model loaded in {bark_model_end_time - bark_model_start_time:.2f} seconds.")
 
-        bark_processor, bark_model, bark_sr, bark_device = processor, model, model.generation_config.sample_rate, device
+        bark_processor, bark_model, bark_sr, bark_device = processor, model, getattr(model, "generation_config", {}).sample_rate if hasattr(model, "generation_config") else 24000, device
         bark_available = True
         print(f"[{datetime.now()}] Bark model and processor loaded successfully!")
     except Exception as e:
         print(f"[{datetime.now()}] Failed to load Bark model: {e}. TTS will be disabled.")
         bark_available = False
+
     print(f"[{datetime.now()}] Model loading complete.")
+
 
 # =====================================================================================
 # 4. Pydantic Models for API Data Validation
@@ -218,20 +264,23 @@ class ProcessResponse(BaseModel):
     filenames: List[str] = Field(..., description="List of filenames processed.")
     processed_url: Optional[str] = Field(None, description="The URL that was processed, if any.")
 
+
 class QueryRequest(BaseModel):
     session_id: str = Field(..., description="The session ID obtained from the /process endpoint.")
     question: str = Field(..., description="The question to ask the RAG system.")
     voice_preset: Optional[str] = Field(None, description="Optional voice preset for Bark TTS (e.g., 'v2/en_speaker_6').")
 
+
 class SourceDocument(BaseModel):
     page_content: str = Field(..., description="The text content of the source chunk.")
     metadata: Dict[str, Any] = Field(..., description="Metadata about the source, like file name or page number.")
 
+
 class QueryResponse(BaseModel):
     answer: str = Field(..., description="The generated answer from the RAG model.")
     source_documents: List[SourceDocument] = Field(..., description="List of source document chunks used for the answer.")
-    # Changed from audio_url to audio_base64
     audio_base64: Optional[str] = Field(None, description="Base64 encoded audio content.")
+
 
 # =====================================================================================
 # 5. Helper Functions for Document and Web Parsing
@@ -329,9 +378,11 @@ class ContentExtractor:
                 print(f"[{datetime.now()}] INFO: Unsupported File in ZIP: {os.path.basename(file_path)}")
                 return f"[Unsupported File in ZIP: {os.path.basename(file_path)}]"
 
+
 # =====================================================================================
 # 6. Core RAG and TTS Logic
 # =====================================================================================
+
 def get_rag_chain(text_chunks: List[str]) -> ConversationalRetrievalChain:
     print(f"[{datetime.now()}] Creating RAG chain...")
     if not text_chunks:
@@ -365,10 +416,14 @@ def get_rag_chain(text_chunks: List[str]) -> ConversationalRetrievalChain:
         print(f"[{datetime.now()}] ERROR: Failed to create RAG chain: {e}")
         raise RuntimeError(f"Failed to create RAG chain: {e}")
 
-# Add this import near the top of the file
+
 from collections.abc import Mapping
 
 def generate_speech_content_base64(text: str, voice_preset: Optional[str]) -> Optional[str]:
+    """
+    The function you provided originally — preserved, but will use the module-level
+    bark_processor, bark_model, bark_device, bark_sr variables loaded at startup.
+    """
     print(f"[{datetime.now()}] [IN-MEMORY TTS] Starting speech generation (Base64 encoding).")
     if not bark_available or not text:
         print(f"[{datetime.now()}] [IN-MEMORY TTS] Bark TTS not available or no text provided. Skipping.")
@@ -570,7 +625,7 @@ def generate_speech_content_base64(text: str, voice_preset: Optional[str]) -> Op
                 print(f"[{datetime.now()}] [IN-MEMORY TTS] generate(...) TypeError with gen_kwargs: {e}. Retrying without gen_kwargs.")
                 bark_output = bark_model.generate(**converted_inputs)
 
-        # (the rest of your output handling -> to numpy, int16, wav writing) unchanged...
+        # (the rest of your output handling -> to numpy, int16, wav writing)
         audio_array = None
         if isinstance(bark_output, dict):
             for key in ("audio", "audios", "waveform", "wav", "output_audio"):
@@ -621,15 +676,29 @@ def generate_speech_content_base64(text: str, voice_preset: Optional[str]) -> Op
         print(f"[{datetime.now()}] [IN-MEMORY TTS] ERROR during speech generation/encoding: {repr(e)}")
         return None
 
+
 # =====================================================================================
 # 7. API Endpoints
 # =====================================================================================
 
-# The /audio mount is technically no longer needed for TTS audio, but kept for static files
-# if other non-TTS static files are needed.
-STATIC_AUDIO_DIR = "generated_audio"
-os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
-app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
+@app.post("/audio_to_blendshapes")
+async def audio_to_blendshapes_route(request: Request):
+    """
+    Accept raw audio bytes (request body) and return blendshape weights.
+    This endpoint lazily loads the blendshape model on first call.
+    """
+    audio_bytes = await request.body()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio bytes received.")
+
+    # Lazy load the blendshape model (safe)
+    blendshape_model, device = get_blendshape_model()
+
+    generated_facial_data = generate_facial_data_from_bytes(audio_bytes, blendshape_model, device, config)
+    generated_facial_data_list = generated_facial_data.tolist() if isinstance(generated_facial_data, np.ndarray) else generated_facial_data
+
+    return JSONResponse(content={'blendshapes': generated_facial_data_list})
+
 
 @app.post("/process", response_model=ProcessResponse)
 async def process_content(
@@ -640,19 +709,19 @@ async def process_content(
     print(f"[{datetime.now()}] /process endpoint called.")
     if not files and not url:
         raise HTTPException(status_code=400, detail="Please provide at least one document or a URL.")
-    
+
     extractor = ContentExtractor()
     temp_dir = f"temp_{uuid.uuid4().hex}"
-    os.makedirs(temp_dir)
+    os.makedirs(temp_dir, exist_ok=True)
     raw_text = ""
     processed_files = []
-    
+
     try:
         process_start_time = time.time()
         if url:
             print(f"[{datetime.now()}] Processing URL: {url}")
             raw_text += extractor.from_url(url) + "\n\n"
-        
+
         if files:
             print(f"[{datetime.now()}] Processing files: {[f.filename for f in files]}")
             for file in files:
@@ -665,26 +734,26 @@ async def process_content(
                 else:
                     raw_text += extractor.from_file_path(file_path) + "\n\n"
                 processed_files.append(file.filename)
-        
+
         if not raw_text.strip():
             print(f"[{datetime.now()}] ERROR: No text extracted from sources.")
             raise HTTPException(status_code=400, detail="No text could be extracted from the provided sources.")
-        
+
         print(f"[{datetime.now()}] Splitting text into chunks...")
         text_splitter_start_time = time.time()
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200, length_function=len)
         text_chunks = text_splitter.split_text(raw_text)
         text_splitter_end_time = time.time()
         print(f"[{datetime.now()}] Text split into {len(text_chunks)} chunks in {text_splitter_end_time - text_splitter_start_time:.2f} seconds.")
-        
+
         session_id = str(uuid.uuid4())
         print(f"[{datetime.now()}] Creating RAG chain for session: {session_id}")
         conversations[session_id] = get_rag_chain(text_chunks)
-        
+
         if prompt_template:
             print(f"[{datetime.now()}] Applying custom prompt template.")
             conversations[session_id].combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template(prompt_template)
-        
+
         process_end_time = time.time()
         print(f"[{datetime.now()}] /process endpoint finished in {process_end_time - process_start_time:.2f} seconds.")
         return ProcessResponse(
@@ -698,7 +767,11 @@ async def process_content(
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
     finally:
         print(f"[{datetime.now()}] Cleaning up temporary directory: {temp_dir}")
-        shutil.rmtree(temp_dir)
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as re:
+            print(f"[{datetime.now()}] WARNING: Failed to remove temp dir: {re}")
+
 
 @app.post("/query", response_model=QueryResponse)
 async def query_session(request: QueryRequest, background_tasks: BackgroundTasks):
@@ -720,22 +793,20 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
         result = chain.invoke({"question": request.question})
         rag_invoke_end_time = time.time()
         print(f"[{datetime.now()}] RAG chain invoked in {rag_invoke_end_time - rag_invoke_start_time:.2f} seconds.")
-        
+
         answer = result.get("answer", "No answer could be generated.")
         print(f"[{datetime.now()}] RAG Answer generated. Length: {len(answer)} chars.")
 
-        # --- FIX: Manually convert LangChain documents to Pydantic models ---
+        # --- Convert LangChain docs to Pydantic models ---
         source_docs_result = result.get("source_documents", [])
         validated_sources = [
             SourceDocument(page_content=doc.page_content, metadata=doc.metadata)
             for doc in source_docs_result
         ]
-        # --- END FIX ---
 
-        audio_base64_content = None # Changed from audio_url
+        audio_base64_content = None
         if bark_available:
             print(f"[{datetime.now()}] Bark TTS is available. Generating audio (Base64).")
-            # Call the new function that returns base64 content
             audio_base64_content = generate_speech_content_base64(text=answer, voice_preset=request.voice_preset)
             if audio_base64_content:
                 print(f"[{datetime.now()}] Base64 audio generated and ready for response.")
@@ -748,11 +819,10 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
         print(f"[{datetime.now()}] /query endpoint finished in {query_end_time - query_start_time:.2f} seconds.")
         return QueryResponse(
             answer=answer,
-            source_documents=validated_sources, # Use the validated list here
-            audio_base64=audio_base64_content # Changed from audio_url
+            source_documents=validated_sources,
+            audio_base64=audio_base64_content
         )
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
-
 
