@@ -1,5 +1,3 @@
 #!/bin/sh
 set -e
-
-echo "Running RunPod Docker build with context"
-docker buildx build .
+docker buildx build .  # <-- the dot is required
