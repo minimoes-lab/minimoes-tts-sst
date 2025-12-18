@@ -37,4 +37,4 @@ USER appuser
 EXPOSE 7860
 
 # start server (make sure module name matches your file)
-CMD ["uvicorn", "flask_Character:app", "--host", "0.0.0.0", "--port", "7860", "--loop", "asyncio"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--loop", "asyncio"]
