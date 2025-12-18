@@ -1,40 +1,20 @@
-# Dockerfile - serverless / local dev friendly
+# Use official Python image
 FROM python:3.9-slim
 
-# create non-root user and app dir
-RUN useradd -ms /bin/bash appuser
+# Set working directory
 WORKDIR /app
 
-# envs
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=off \
-    PIP_DISABLE_PIP_VERSION_CHECK=on \
-    PIP_DEFAULT_TIMEOUT=100 \
-    NUMBA_DISABLE_CACHE=1 \
-    PYTHONPATH=/app
+# Copy requirements
+COPY requirements.txt .
 
-# caches and huggingface caches (optional)
-RUN mkdir -p /app/generated_audio /app/.cache/huggingface /app/.cache/torch \
- && chown -R appuser:appuser /app
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# copy requirements and install as root (faster)
-COPY requirements.txt /app/requirements.txt
-RUN apt-get update && apt-get install -y git build-essential ffmpeg \
- && pip install --upgrade pip \
- && pip install --no-cache-dir -r /app/requirements.txt \
- && apt-get remove -y build-essential \
- && apt-get autoremove -y \
- && rm -rf /var/lib/apt/lists/*
+# Copy all files
+COPY . .
 
-# copy app
-COPY . /app
-RUN chown -R appuser:appuser /app
+# Expose port
+EXPOSE 8000
 
-# switch to non-root user
-USER appuser
-
-# expose port (match uvicorn cmd)
-EXPOSE 7860
-
-# start server (make sure module name matches your file)
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--loop", "asyncio"]
+# Run FastAPI app
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
