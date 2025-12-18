@@ -32,4 +32,4 @@ USER appuser
 EXPOSE 7860
 
 # Start FastAPI using Uvicorn
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "flask_Character:app", "--host", "0.0.0.0", "--port", "7860"]
