@@ -62,7 +62,7 @@ app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
 # -------------------------
 # Global state (lazy / startup loaded)
 # -------------------------
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 if not GROQ_API_KEY:
     # keep service startable but warn
     print("[WARN] GROQ_API_KEY not set; ChatGroq calls will fail until set.")
