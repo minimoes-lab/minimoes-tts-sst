@@ -1,3 +1,3 @@
 #!/bin/sh
-set -e
-docker buildx build .  # <-- the dot is required
+echo "Starting Docker build..."
+docker buildx build . -f Dockerfile --tag fastapi_app:latest
