@@ -6,38 +6,30 @@ fastapi
 uvicorn
 typing-extensions
 
-# Pydantic (FastAPI compatible)
 pydantic
 
-# LangChain
 langchain
 langchain-core
 langchain-community
 langchain-groq
 
-# Database
 pymongo
 
-# Audio
 librosa==0.10.1
 numba==0.56.4
 scipy
 
-# Data
 pandas
 bs4
 python-multipart
 
-# Docs
 python-docx
 python-pptx
 PyPDF2
 
-# ML / NLP
 transformers
 faiss-cpu
 sentence-transformers==2.2.2
 huggingface-hub==0.25.2
 
-# Optional APIs
 openai
