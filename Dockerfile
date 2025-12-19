@@ -52,7 +52,7 @@ EXPOSE 7860
 #   - 'your_app' should be the name of your main Python file (without the .py extension).
 #   - 'app' should be the name of your Flask application instance
 #     (e.g., app = flask.Flask(__name__)).
-CMD ["gunicorn", "--workers", "4", "--bind", "0.0.0.0:7860", "flask_Character:app"]
+CMD ["gunicorn", "--workers", "4", "--bind", "0.0.0.0:7860", "api:app"]
 
 # Important Note:
 # Before building your Docker image, make sure to remove the following block
