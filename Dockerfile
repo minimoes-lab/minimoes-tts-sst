@@ -1,28 +1,24 @@
-FROM python:3.11
+FROM python:3.9-slim
 
-ENV PYTHONUNBUFFERED=1
-ENV NUMBA_DISABLE_CACHE=1
-ENV PIP_NO_CACHE_DIR=1
+# ---- env ----
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NUMBA_DISABLE_CACHE=1
 
+# ---- workdir ----
 WORKDIR /app
 
-# System deps needed for librosa / numba / audio
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    ffmpeg \
-    libsndfile1 \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python deps first
+# ---- deps first (important for buildx) ----
 COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
 
-# Copy code
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---- copy app ----
 COPY . /app
 
+# ---- port (RunPod + HF compatible) ----
 EXPOSE 7860
 
-# IMPORTANT: match RunPod command exactly
-CMD ["gunicorn", "--workers", "1", "--timeout", "300000", "--bind", "0.0.0.0:7860", "--worker-class", "uvicorn.workers.UvicornWorker", "api:app"]
+# ---- start server ----
+CMD ["gunicorn", "-w", "1", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "300000", "--bind", "0.0.0.0:7860", "api:app"]
