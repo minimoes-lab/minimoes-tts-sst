@@ -1,2 +1,9 @@
 #!/bin/bash
-docker buildx build -f Dockerfile -t fastapi-app:latest .
+set -e
+
+echo "🚀 Building Docker image for RunPod..."
+
+docker buildx build \
+  --platform linux/amd64 \
+  -t fastapi-app \
+  .
