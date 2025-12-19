@@ -26,8 +26,9 @@ COPY requirements.txt .
 # This command executes during the image build. It reads the requirements.txt file
 # and installs all the listed Python packages using pip.
 # Make sure you have 'Flask', 'numpy', 'torch', 'gunicorn', and any other
-# necessary libraries listed in your requirements.txt file.
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
+
 
 # Copy the rest of your application code into the container
 # This copies all other files and directories from your local project's root
