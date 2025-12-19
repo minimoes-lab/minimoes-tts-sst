@@ -1,48 +1,43 @@
-
 requests
 numpy
 torch
 gunicorn
-fastapi 
+fastapi
 uvicorn
-pydantic
-pydantic[email]
 typing-extensions
-langchain 
-langchain_groq
+
+# Pydantic (FastAPI compatible)
+pydantic
+
+# LangChain
+langchain
 langchain-core
+langchain-community
+langchain-groq
+
+# Database
 pymongo
+
+# Audio
 librosa==0.10.1
 numba==0.56.4
 scipy
-uvicorn
-pandas
 
+# Data
+pandas
 bs4
 python-multipart
-# File Handling
+
+# Docs
 python-docx
 python-pptx
 PyPDF2
 
-
-zipfile36  # For zipfile support (older environments)
-
-# Machine Learning & Transformers
-
+# ML / NLP
 transformers
-
-# LangChain & Related
-langchain-community
-
-# Hugging Face Embeddings & FAISS
-faiss-cpu  # for CPU-based FAISS usage
-sentence-transformers
-
-# Pydantic
-pydantic
-
-# Optional: if using OpenAI or Groq
-openai
+faiss-cpu
 sentence-transformers==2.2.2
 huggingface-hub==0.25.2
+
+# Optional APIs
+openai
