@@ -14,4 +14,4 @@ COPY . .
 
 EXPOSE 7860
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--workers", "1", "--timeout", "300000", "--bind", "0.0.0.0:7860", "flsk:app"]
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--workers", "1", "--timeout", "300000", "--bind", "0.0.0.0:7860", "api:app"]
