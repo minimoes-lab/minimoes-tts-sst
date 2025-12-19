@@ -2,7 +2,7 @@
 # We are using a lightweight Python 3.9 image.
 # Using a specific version tag (like 3.9-slim) is recommended for stability
 # and to ensure your build is reproducible.
-FROM python:3.9-slim
+
 
 # Set environment variables
 # These environment variables are commonly used for Python applications
