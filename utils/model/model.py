@@ -5,7 +5,18 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-model_path = 'utils/model/model.pth'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Join the directory with the filename
+model_path = os.path.join(BASE_DIR, "model.pth")
+
+print(f"DEBUG: Looking for model at absolute path: {model_path}")
+
+# 3. Check if it exists and list files if it doesn't
+if not os.path.exists(model_path):
+    print(f"❌ ERROR: File not found at {model_path}")
+    print(f"DEBUG: Contents of this folder: {os.listdir(BASE_DIR)}")
+    raise FileNotFoundError(f"Missing file: {model_path}")
 def load_model(model_path, config, device):
     device = torch.device(device)
     
