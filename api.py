@@ -62,9 +62,9 @@ app = FastAPI(
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Activated device:", device)
 
-model_path = 'utils/model/model.pth'
+model_path = os.path.join(root_dir, 'utils', 'model', 'model.pth')
 blendshape_model = load_model(model_path, config, device)
-
+print(f"DEBUG: Absolute path is: {model_path}")
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
 
@@ -755,4 +755,5 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
