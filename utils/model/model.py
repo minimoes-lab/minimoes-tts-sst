@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+model_path = 'utils/model/model.pth'
 def load_model(model_path, config, device):
     device = torch.device(device)
     
