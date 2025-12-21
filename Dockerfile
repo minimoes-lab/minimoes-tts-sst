@@ -29,7 +29,8 @@ RUN pip install --upgrade pip \
 
 # Copy the rest of the application code
 COPY . /app
-
+# Check if the file is actually there during the build
+RUN ls -lh /app/utils/model/model.pth
 # Expose the port the app will run on
 EXPOSE 7860
 
