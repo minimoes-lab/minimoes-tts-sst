@@ -9,7 +9,8 @@ import torch.nn.functional as F
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 2. Join the directory with the filename
-model_path = os.path.join(BASE_DIR, "model.pth")
+model_path = "utils/model/model.pth"
+
 
 print(f"DEBUG: Looking for model at absolute path: {model_path}")
 
