@@ -34,4 +34,4 @@ COPY . /app
 EXPOSE 7860
 
 # Start the app using Gunicorn + Uvicorn worker
-CMD ["gunicorn", "--workers", "2", "--timeout", "30000", "--bind", "0.0.0.0:7860", "--worker-class", "uvicorn.workers.UvicornWorker", "api:app"]
+CMD ["gunicorn", "--workers", "2","--preload", "--timeout", "30000", "--bind", "0.0.0.0:7860", "--worker-class", "uvicorn.workers.UvicornWorker", "api:app"]
