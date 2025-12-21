@@ -40,7 +40,7 @@ def load_model(model_path, config, device):
     decoder = Decoder(config['output_dim'], hidden_dim, n_layers, num_heads)
     model = Seq2Seq(encoder, decoder, device).to(device)
 
-    state_dict = torch.load(model_path, map_location=device, weights_only=False)
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict, strict=True)
 
 
