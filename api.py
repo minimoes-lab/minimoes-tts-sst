@@ -64,7 +64,8 @@ print("Activated device:", device)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Join that with the filename
-model_path = os.path.join(BASE_DIR, "model.pth")
+model_path = "utils/model/model.pth"
+
 
 print(f"--- ATTEMPTING TO LOAD: {model_path} ---")
 blendshape_model = load_model(model_path, config, device)
@@ -759,6 +760,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
