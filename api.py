@@ -55,12 +55,11 @@ from utils.model.model import load_model
 from utils.config import config
 import multiprocessing
 
-
-try:
-    # This fixes the "Cannot re-initialize CUDA" error
-    multiprocessing.set_start_method('spawn', force=True)
-except RuntimeError:
-    pass
+if __name__ == '__main__' or __name__.startswith("api"):
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
 app = FastAPI(
     title="Intelligent Document & Web API",
     description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
@@ -767,6 +766,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
