@@ -54,6 +54,10 @@ from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
 from utils.config import config
 import multiprocessing
+@app.on_event("startup")
+def load_models():
+    global bark_model
+    bark_model = load_bark().to("cuda")
 
 if __name__ == '__main__' or __name__.startswith("api"):
     try:
@@ -766,6 +770,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
