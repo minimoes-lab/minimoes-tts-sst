@@ -48,4 +48,11 @@ RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
 EXPOSE 7860
 
 # Start the app using Gunicorn + Uvicorn worker
-CMD ["gunicorn", "--workers", "1","--preload", "--timeout", "30000", "--bind", "0.0.0.0:7860", "--worker-class", "uvicorn.workers.UvicornWorker", "api:app"]
+CMD ["gunicorn", "api:app",
+     "--workers", "1",
+     "--timeout", "30000",
+     "--graceful-timeout", "30000",
+     "--keep-alive", "75",
+     "--bind", "0.0.0.0:7860",
+     "--worker-class", "uvicorn.workers.UvicornWorker"]
+
