@@ -46,7 +46,7 @@ RUN ls -lh utils/model/model.pth
 RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
 # Expose the port the app will run on
 EXPOSE 7860
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860"]
 
-CMD ["uvicorn","api:app","--workers","1","--timeout","30000","--graceful-timeout","30000","--bind","0.0.0.0:7860","--worker-class","uvicorn.workers.UvicornWorker"]
 
 
