@@ -54,6 +54,11 @@ from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
 from utils.config import config
 import multiprocessing
+app = FastAPI(
+    title="Intelligent Document & Web API",
+    description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
+    version="2.0.1" # Version updated
+)
 @app.on_event("startup")
 def load_models():
     global bark_model
@@ -64,11 +69,7 @@ if __name__ == '__main__' or __name__.startswith("api"):
         multiprocessing.set_start_method('spawn', force=True)
     except RuntimeError:
         pass
-app = FastAPI(
-    title="Intelligent Document & Web API",
-    description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
-    version="2.0.1" # Version updated
-)
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Activated device:", device)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -776,6 +777,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
