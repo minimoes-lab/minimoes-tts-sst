@@ -191,9 +191,7 @@ async def tts_diagnose():
     return PlainTextResponse(json.dumps(debug, indent=2))
 
 @app.on_event("startup")
-def load_models():
-    global bark_model
-    bark_model = load_bark().to("cuda")
+
     
 async def load_models():
     """Load heavy ML models once when the API starts up."""
@@ -778,6 +776,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
