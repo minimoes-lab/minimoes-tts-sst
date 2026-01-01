@@ -653,7 +653,7 @@ STATIC_AUDIO_DIR = "generated_audio"
 os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
 app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
 
-@app.post("/run", response_model=ProcessResponse)
+@app.post("/process", response_model=ProcessResponse)
 async def process_content(
     files: Optional[List[UploadFile]] = File(None, description="A list of documents to process."),
     url: Optional[str] = Form(None, description="A URL to a website to scrape for text."),
@@ -776,6 +776,7 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
+
 
 
 
