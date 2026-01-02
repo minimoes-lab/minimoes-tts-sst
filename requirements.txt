@@ -28,9 +28,9 @@ python-docx
 python-pptx
 PyPDF2
 
-transformers
-faiss-cpu
+transformers==4.36.2
+faiss-cpu==1.7.4
 sentence-transformers==2.2.2
-huggingface-hub==0.25.2
+huggingface-hub==0.19.4
 
 openai
