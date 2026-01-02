@@ -37,7 +37,7 @@ import zipfile
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
 from transformers import AutoProcessor, BarkModel
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
@@ -776,20 +776,3 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
