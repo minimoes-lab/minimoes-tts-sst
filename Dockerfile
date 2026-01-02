@@ -47,4 +47,6 @@ RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
 # Expose the port the app will run on
 EXPOSE 7860
 
-CMD ["python", "handler.py"]
+CMD ["python3", "-u", "runpod_handler.py"]
+
+
