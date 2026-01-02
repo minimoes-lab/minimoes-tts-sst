@@ -29,9 +29,21 @@ RUN pip install --upgrade pip \
 
 # Copy the rest of the application code
 COPY . /app
+# 1. Ensure wget is installed
+RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
-# Create model directory (model will be downloaded at runtime)
-RUN mkdir -p utils/model
+
+
+# 3. Delete the fake pointer file using the path you requested
+RUN rm utils/model/model.pth
+
+# 4. Download the REAL 600MB model into that exact folder
+RUN wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth
+
+# 5. VERIFY: The logs should now show ~600M instead of 134
+RUN ls -lh utils/model/model.pth
+# Check if the file is actually there during the build
+RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
 # Expose the port the app will run on
 EXPOSE 7860
 
