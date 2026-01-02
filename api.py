@@ -37,7 +37,7 @@ import zipfile
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
 from transformers import AutoProcessor, BarkModel
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
@@ -190,13 +190,56 @@ async def tts_diagnose():
     import json
     return PlainTextResponse(json.dumps(debug, indent=2))
 
-@app.on_event("startup")
-
+def ensure_model_downloaded():
+    """Ensure the face model is downloaded before starting."""
+    import os
+    import requests
+    from pathlib import Path
     
+    model_path = "utils/model/model.pth"
+    model_url = "https://huggingface.co/KKKONNK/model/resolve/main/model.pth"
+    
+    # Create directory if it doesn't exist
+    Path(model_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check if model exists and is valid size (>500MB)
+    if os.path.exists(model_path):
+        file_size = os.path.getsize(model_path)
+        if file_size > 500_000_000:  # 500MB
+            print(f"✅ Model already exists ({file_size / 1_000_000:.1f}MB)")
+            return
+        else:
+            print(f"⚠️ Model file too small ({file_size / 1_000_000:.1f}MB), re-downloading...")
+            os.remove(model_path)
+    
+    print(f"📥 Downloading model from {model_url}...")
+    try:
+        response = requests.get(model_url, stream=True)
+        response.raise_for_status()
+        
+        with open(model_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        file_size = os.path.getsize(model_path)
+        print(f"✅ Model downloaded successfully ({file_size / 1_000_000:.1f}MB)")
+    except Exception as e:
+        print(f"❌ Failed to download model: {e}")
+        raise
+
+@app.on_event("startup")
 async def load_models():
     """Load heavy ML models once when the API starts up."""
     global embeddings_model, bark_processor, bark_model, bark_sr, bark_device, bark_available
 
+    # Ensure model is downloaded first
+    ensure_model_downloaded()
+    
+    # Clear GPU cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"🔥 GPU cache cleared, CUDA available: {torch.cuda.is_available()}")
+    
     print(f"[{datetime.now()}] Starting model loading...")
     
     print(f"[{datetime.now()}] Loading HuggingFace embeddings model...")
