@@ -40,13 +40,12 @@ RUN rm utils/model/model.pth
 # 4. Download the REAL 600MB model into that exact folder
 RUN wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth
 
-# 5. VERIFY: The logs should now show 600M instead of 134
+# 5. VERIFY: The logs should now show ~600M instead of 134
 RUN ls -lh utils/model/model.pth
 # Check if the file is actually there during the build
 RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
 # Expose the port the app will run on
 EXPOSE 7860
 
-CMD ["gunicorn", "api:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:7860", "--timeout", "300", "--graceful-timeout", "300"]
-
-
+#CMD ["gunicorn", "api:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:7860", "--timeout", "30000", "--graceful-timeout", "30000"]
+CMD ["uvicorn","api:app","--workers","1","--timeout","30000","--graceful-timeout","30000","--bind","0.0.0.0:7860","--worker-class","uvicorn.workers.UvicornWorker"]
