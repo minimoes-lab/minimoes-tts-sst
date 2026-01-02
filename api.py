@@ -37,7 +37,7 @@ import zipfile
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
 from transformers import AutoProcessor, BarkModel
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory

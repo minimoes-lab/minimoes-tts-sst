@@ -12,6 +12,7 @@ langchain
 langchain-core
 langchain-community
 langchain-groq
+langchain-huggingface
 
 pymongo
 
@@ -33,3 +34,5 @@ sentence-transformers==2.2.2
 huggingface-hub==0.25.2
 
 openai
+
+runpod
