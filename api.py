@@ -780,15 +780,135 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
 
 
 
+# Combined api for inference 
+
+class InferRequest(BaseModel):
+    question: str = Field(..., description="User question / prompt")
+
+    # Knowledge source (one of them)
+    url: Optional[str] = None
+    files: Optional[List[str]] = None  # future-safe
+
+    # Optional controls
+    voice_preset: Optional[str] = Field(None, description="Bark voice preset")
+    return_audio: bool = Field(False, description="Return audio base64 or not")
+    return_csv: bool = Field(False, description="Return blendshapes as CSV")
 
 
+class InferResponse(BaseModel):
+    answer: str
+    blendshapes: List[List[float]]
+    audio_base64: Optional[str] = None
+    csv: Optional[str] = None
+
+import json
 
 
+import json
 
+@app.post("/infer", response_model=InferResponse)
+async def infer(
+    request_raw: str = Form(..., description="JSON string with inference parameters"),
+    files: Optional[List[UploadFile]] = File(None),
+    url: Optional[str] = Form(None)
+):
+    # ---------------------------------------------
+    # 0. Parse request JSON
+    # ---------------------------------------------
+    try:
+        req = InferRequest(**json.loads(request_raw))
+    except Exception as e:
+        raise HTTPException(400, f"Invalid request JSON: {e}")
 
+    # Validate source
+    if not files and not url:
+        raise HTTPException(
+            status_code=400,
+            detail="Either files or url must be provided"
+        )
 
+    start = time.time()
 
+    # ---------------------------------------------
+    # 1. Extract text
+    # ---------------------------------------------
+    extractor = ContentExtractor()
+    raw_text = ""
 
+    if url:
+        raw_text += extractor.from_url(url)
+        print(f"[INFER] Extracted text from URL: {url}")
+
+    if files:
+        temp_dir = tempfile.mkdtemp()
+        try:
+            for f in files:
+                path = os.path.join(temp_dir, f.filename)
+                with open(path, "wb") as buf:
+                    shutil.copyfileobj(f.file, buf)
+                raw_text += extractor.from_file_path(path)
+        finally:
+            shutil.rmtree(temp_dir)
+
+    if not raw_text.strip():
+        raise HTTPException(400, "No content to process")
+
+    # ---------------------------------------------
+    # 2. RAG
+    # ---------------------------------------------
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200
+    )
+    chunks = splitter.split_text(raw_text)
+
+    rag_chain = get_rag_chain(chunks)
+    result = rag_chain.invoke({"question": req.question})
+    answer = result["answer"]
+
+    # ---------------------------------------------
+    # 3. Text → Audio
+    # ---------------------------------------------
+    audio_base64 = None
+    if bark_available:
+        audio_base64 = generate_speech_content_base64(
+            answer,
+            voice_preset=req.voice_preset
+        )
+
+    # ---------------------------------------------
+    # 4. Audio → Blendshapes
+    # ---------------------------------------------
+    blendshapes = []
+    if audio_base64:
+        audio_bytes = base64.b64decode(audio_base64)
+        facial_data = generate_facial_data_from_bytes(
+            audio_bytes,
+            blendshape_model,
+            device,
+            config
+        )
+        blendshapes = facial_data.tolist()
+
+    # ---------------------------------------------
+    # 5. Optional CSV
+    # ---------------------------------------------
+    # csv_data = None
+    # if req.return_csv and blendshapes:
+    #     import csv, io
+    #     output = io.StringIO()
+    #     writer = csv.writer(output)
+    #     writer.writerows(blendshapes)
+    #     csv_data = output.getvalue()
+
+    print(f"[INFER] Done in {time.time() - start:.2f}s")
+
+    return InferResponse(
+        answer=answer,
+        blendshapes=blendshapes,
+        audio_base64=audio_base64 if req.return_audio else None,
+        # csv=csv_data
+    )
 
 
 
