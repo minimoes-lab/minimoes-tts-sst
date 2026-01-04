@@ -32,8 +32,6 @@ COPY . /app
 # 1. Ensure wget is installed
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
-
-
 # 3. Delete the fake pointer file using the path you requested
 RUN rm utils/model/model.pth
 
