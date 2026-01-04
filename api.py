@@ -893,13 +893,13 @@ async def infer(
     # ---------------------------------------------
     # 5. Optional CSV
     # ---------------------------------------------
-    # csv_data = None
-    # if req.return_csv and blendshapes:
-    #     import csv, io
-    #     output = io.StringIO()
-    #     writer = csv.writer(output)
-    #     writer.writerows(blendshapes)
-    #     csv_data = output.getvalue()
+    csv_data = None
+    if req.return_csv and blendshapes:
+        import csv, io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerows(blendshapes)
+        csv_data = output.getvalue()
 
     print(f"[INFER] Done in {time.time() - start:.2f}s")
 
@@ -907,7 +907,7 @@ async def infer(
         answer=answer,
         blendshapes=blendshapes,
         audio_base64=audio_base64 if req.return_audio else None,
-        # csv=csv_data
+        csv=csv_data
     )
 
 

@@ -87,6 +87,10 @@ The application runs safely with significant GPU headroom.
 
 Unified inference endpoint.
 
+```markdown
+NOTE: For hitting individual APIs, refer to the Swagger documentation at `http://localhost:7860/docs` or your deployed host URL.
+```
+
 #### What it does
 
 - Accepts a question
@@ -102,17 +106,6 @@ Unified inference endpoint.
 
 - `request_raw` → JSON string with inference parameters
 - `url` → Website URL or `files` → One or more documents or `both`
-
-
-### Example `request_raw`
-```json
-{
-  "question": "Summarize this content",
-  "voice_preset": null,
-  "return_csv": true,
-  "return_audio": false
-}
-```
 
 ---
 
