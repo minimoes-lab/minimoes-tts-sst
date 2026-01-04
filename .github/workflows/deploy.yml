@@ -33,4 +33,4 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: shudh25/infer-api:latest
+          tags: testsdocker/infer-api:latest
