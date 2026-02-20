@@ -1,0 +1,31 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streaming-avatar-api
+    ports:
+      - "7860:7860"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - TOKENIZERS_PARALLELISM=false
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount for demo outputs
+      - ./demo_outputs:/app/demo_outputs
+      - ./generated_audio:/app/generated_audio
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+    stdin_open: true
+    tty: true

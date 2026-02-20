@@ -4,19 +4,22 @@ torch
 gunicorn
 fastapi
 uvicorn
+websockets
 typing-extensions
 
 pydantic
 
-langchain
-langchain-core
-langchain-community
+# LangChain - simplified to avoid conflicts
+langchain==0.3.27
+langchain-core==0.3.83
+langchain-community==0.3.31
 langchain-groq
+langchain-text-splitters>=0.3.9
 
 pymongo
 
 librosa==0.10.1
-numba==0.56.4
+numba>=0.58.0
 scipy
 
 pandas
@@ -27,9 +30,26 @@ python-docx
 python-pptx
 PyPDF2
 
-transformers
+transformers>=4.35.0
 faiss-cpu
 sentence-transformers==2.2.2
 huggingface-hub==0.25.2
 
-openai
+# TTS engines
+openai>=1.0.0
+accelerate
+safetensors
+
+# Qwen3-TTS support (optional - will use fallback if not available)
+# qwen-tts>=0.1.0
+tokenizers>=0.15.0
+
+# Performance monitoring
+psutil
+
+# WebSocket client for testing
+websockets>=10.0
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

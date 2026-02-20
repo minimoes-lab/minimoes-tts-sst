@@ -1,0 +1,495 @@
+"""
+Kyutai-inspired delayed streams coordinator for joint audio-visual modeling.
+Reference: https://github.com/kyutai-labs/delayed-streams-modeling
+"""
+import asyncio
+import base64
+from datetime import datetime
+from typing import Optional, List
+import numpy as np
+
+from fastapi import WebSocket
+
+from streaming.protocol import (
+    make_audio_chunk_msg,
+    make_blendshapes_msg,
+    make_idle_frames_msg,
+    make_status_msg,
+    make_text_chunk_msg,
+)
+from streaming.sentence_buffer import SentenceBuffer
+from streaming.streaming_rag import streaming_rag_query
+from streaming.idle_frames import generate_idle_frames
+
+
+class DelayedStream:
+    """
+    Manages a delayed stream with configurable latency.
+    Kyutai approach: audio and visual streams are synchronized with controlled delay.
+    """
+    
+    def __init__(self, delay_frames: int = 0):
+        self.delay_frames = delay_frames
+        self.buffer: List = []
+    
+    def push(self, item):
+        """Add item to delayed buffer."""
+        self.buffer.append(item)
+    
+    def pop(self) -> Optional[any]:
+        """Pop item if delay satisfied."""
+        if len(self.buffer) > self.delay_frames:
+            return self.buffer.pop(0)
+        return None
+    
+    def flush(self) -> List:
+        """Flush all remaining items."""
+        items = self.buffer.copy()
+        self.buffer.clear()
+        return items
+
+
+class KyutaiStreamCoordinator:
+    """
+    Enhanced coordinator using Kyutai delayed streams approach.
+    
+    Key improvements:
+    - Joint audio-visual modeling with controlled delay
+    - Adaptive buffering based on network conditions
+    - Better synchronization between modalities
+    - Graceful error recovery
+    """
+    
+    def __init__(
+        self,
+        websocket: WebSocket,
+        tts_worker,
+        blendshape_worker,
+        config: dict,
+    ):
+        self.ws = websocket
+        self.tts = tts_worker
+        self.bs = blendshape_worker
+        self.config = config
+        
+        # Sentence buffering
+        self.sentence_buffer = SentenceBuffer(min_chars=20, max_chars=200)
+        
+        # Delayed streams for synchronization
+        self.audio_stream = DelayedStream(delay_frames=0)
+        self.visual_stream = DelayedStream(delay_frames=2)  # 2-chunk visual delay
+        
+        # State tracking
+        self._cancelled = False
+        self._cumulative_audio_time = 0.0
+        self._sentence_index = 0
+        self._last_blendshape_frame: Optional[np.ndarray] = None
+        
+        # Adaptive buffering
+        self._buffer_health = 1.0  # 0.0 = empty, 1.0 = full
+        self._target_buffer_size = 3
+        self._min_buffer_size = 1
+        self._max_buffer_size = 5
+        
+        # Queues with adaptive sizing
+        self._sentence_queue: asyncio.Queue = asyncio.Queue(maxsize=self._max_buffer_size)
+        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=self._target_buffer_size)
+        
+        # Error recovery
+        self._error_count = 0
+        self._max_errors = 3
+        self._last_successful_frame = None
+    
+    async def run_streaming_pipeline(
+        self,
+        rag_chain,
+        question: str,
+        voice_preset: Optional[str] = None,
+        return_audio: bool = True,
+    ):
+        """Run the full streaming pipeline with Kyutai optimizations."""
+        self._cancelled = False
+        self.tts.reset()
+        self.bs.reset()
+        
+        await self._send_status("processing", "Starting Kyutai-optimized pipeline")
+        
+        # Create concurrent tasks
+        llm_task = asyncio.create_task(self._llm_stage(rag_chain, question))
+        tts_task = asyncio.create_task(self._tts_stage(voice_preset))
+        blendshape_task = asyncio.create_task(self._blendshape_stage(return_audio))
+        interrupt_task = asyncio.create_task(self._listen_for_interrupts())
+        monitor_task = asyncio.create_task(self._monitor_buffer_health())
+        
+        tasks = [llm_task, tts_task, blendshape_task, interrupt_task, monitor_task]
+        
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_EXCEPTION
+            )
+            for task in done:
+                if task.exception() and task not in [interrupt_task, monitor_task]:
+                    raise task.exception()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[{datetime.now()}] [Kyutai] Pipeline error: {repr(e)}")
+            await self._send_status("error", str(e))
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            
+            if self._cancelled:
+                await self._send_idle_transition()
+                await self._send_status("interrupted", "Generation interrupted")
+            else:
+                await self._send_status("complete", "Generation complete")
+    
+    async def _llm_stage(self, rag_chain, question: str):
+        """Stage 1: LLM streaming with sentence buffering."""
+        try:
+            async for token in streaming_rag_query(rag_chain, question):
+                if self._cancelled:
+                    break
+                
+                sentences = self.sentence_buffer.add_token(token)
+                for sentence in sentences:
+                    await self.ws.send_json(
+                        make_text_chunk_msg(
+                            self._sentence_index, sentence, is_final=False
+                        )
+                    )
+                    await self._sentence_queue.put(sentence)
+                    self._sentence_index += 1
+            
+            # Flush remaining
+            if not self._cancelled:
+                remaining = self.sentence_buffer.flush()
+                if remaining:
+                    await self.ws.send_json(
+                        make_text_chunk_msg(
+                            self._sentence_index, remaining, is_final=True
+                        )
+                    )
+                    await self._sentence_queue.put(remaining)
+                    self._sentence_index += 1
+        
+        except Exception as e:
+            print(f"[{datetime.now()}] [Kyutai LLM] ERROR: {repr(e)}")
+            await self._handle_error("llm", e)
+        finally:
+            await self._sentence_queue.put(None)
+    
+    async def _tts_stage(self, voice_preset: Optional[str]):
+        """Stage 2: TTS with error recovery."""
+        sentence_idx = 0
+        retry_count = 0
+        max_retries = 2
+        
+        try:
+            while True:
+                if self._cancelled:
+                    break
+                
+                sentence = await self._sentence_queue.get()
+                if sentence is None:
+                    break
+                
+                # Try to generate audio with retries
+                audio_chunk = None
+                for attempt in range(max_retries + 1):
+                    try:
+                        audio_chunk = await self.tts.process_sentence(
+                            sentence,
+                            sentence_idx,
+                            self._cumulative_audio_time,
+                            voice_preset,
+                        )
+                        if audio_chunk:
+                            retry_count = 0
+                            break
+                    except Exception as e:
+                        print(f"[{datetime.now()}] [Kyutai TTS] Attempt {attempt + 1} failed: {e}")
+                        if attempt < max_retries:
+                            await asyncio.sleep(0.1 * (attempt + 1))
+                
+                if audio_chunk and not self._cancelled:
+                    self._cumulative_audio_time += audio_chunk.duration
+                    await self._audio_queue.put(audio_chunk)
+                    self._error_count = 0
+                else:
+                    # Generate silence chunk as fallback
+                    await self._generate_silence_chunk(sentence_idx)
+                    self._error_count += 1
+                
+                sentence_idx += 1
+        
+        except Exception as e:
+            print(f"[{datetime.now()}] [Kyutai TTS] ERROR: {repr(e)}")
+            await self._handle_error("tts", e)
+        finally:
+            await self._audio_queue.put(None)
+    
+    async def _blendshape_stage(self, return_audio: bool):
+        """Stage 3: Blendshape generation with delayed stream sync."""
+        chunk_idx = 0
+        
+        try:
+            while True:
+                if self._cancelled:
+                    break
+                
+                audio_chunk = await self._audio_queue.get()
+                if audio_chunk is None:
+                    break
+                
+                # Send audio immediately (no delay)
+                if return_audio:
+                    audio_b64 = base64.b64encode(audio_chunk.audio_bytes).decode("utf-8")
+                    await self.ws.send_json(
+                        make_audio_chunk_msg(
+                            chunk_index=chunk_idx,
+                            sentence_index=audio_chunk.sentence_index,
+                            audio_base64=audio_b64,
+                            start_time=audio_chunk.start_time,
+                            end_time=audio_chunk.start_time + audio_chunk.duration,
+                            sample_rate=audio_chunk.sample_rate,
+                            is_final=False,
+                        )
+                    )
+                
+                # Generate blendshapes with error handling
+                try:
+                    bs_chunk = await self.bs.process_audio_chunk(audio_chunk)
+                    
+                    if bs_chunk and not self._cancelled:
+                        if len(bs_chunk.frames) > 0:
+                            self._last_blendshape_frame = bs_chunk.frames[-1].copy()
+                            self._last_successful_frame = bs_chunk.frames[-1].copy()
+                        
+                        # Push to delayed visual stream
+                        self.visual_stream.push(bs_chunk)
+                        
+                        # Pop from delayed stream if ready
+                        ready_chunk = self.visual_stream.pop()
+                        if ready_chunk:
+                            await self.ws.send_json(
+                                make_blendshapes_msg(
+                                    chunk_index=chunk_idx,
+                                    sentence_index=ready_chunk.sentence_index,
+                                    frames=ready_chunk.frames.tolist(),
+                                    start_time=ready_chunk.start_time,
+                                    end_time=ready_chunk.end_time,
+                                    frame_rate=ready_chunk.frame_rate,
+                                    is_final=False,
+                                )
+                            )
+                
+                except Exception as e:
+                    print(f"[{datetime.now()}] [Kyutai BS] Error: {e}")
+                    # Use last successful frame as fallback
+                    await self._send_fallback_frames(chunk_idx, audio_chunk)
+                
+                chunk_idx += 1
+            
+            # Flush delayed visual stream
+            remaining = self.visual_stream.flush()
+            for bs_chunk in remaining:
+                await self.ws.send_json(
+                    make_blendshapes_msg(
+                        chunk_index=chunk_idx,
+                        sentence_index=bs_chunk.sentence_index,
+                        frames=bs_chunk.frames.tolist(),
+                        start_time=bs_chunk.start_time,
+                        end_time=bs_chunk.end_time,
+                        frame_rate=bs_chunk.frame_rate,
+                        is_final=False,
+                    )
+                )
+                chunk_idx += 1
+            
+            # Send final markers
+            if not self._cancelled:
+                await self.ws.send_json(
+                    make_audio_chunk_msg(
+                        chunk_index=chunk_idx,
+                        sentence_index=max(0, self._sentence_index - 1),
+                        audio_base64="",
+                        start_time=self._cumulative_audio_time,
+                        end_time=self._cumulative_audio_time,
+                        sample_rate=self.tts.sr or 24000,
+                        is_final=True,
+                    )
+                )
+                await self.ws.send_json(
+                    make_blendshapes_msg(
+                        chunk_index=chunk_idx,
+                        sentence_index=max(0, self._sentence_index - 1),
+                        frames=[],
+                        start_time=self._cumulative_audio_time,
+                        end_time=self._cumulative_audio_time,
+                        frame_rate=60,
+                        is_final=True,
+                    )
+                )
+        
+        except Exception as e:
+            print(f"[{datetime.now()}] [Kyutai BS] ERROR: {repr(e)}")
+            await self._handle_error("blendshape", e)
+    
+    async def _monitor_buffer_health(self):
+        """Monitor and adapt buffer sizes based on queue health."""
+        while not self._cancelled:
+            try:
+                await asyncio.sleep(0.5)
+                
+                # Calculate buffer health
+                audio_fill = self._audio_queue.qsize() / self._target_buffer_size
+                sentence_fill = self._sentence_queue.qsize() / self._target_buffer_size
+                
+                self._buffer_health = (audio_fill + sentence_fill) / 2
+                
+                # Adapt buffer sizes
+                if self._buffer_health < 0.3:
+                    # Buffer running low, increase target
+                    self._target_buffer_size = min(
+                        self._target_buffer_size + 1,
+                        self._max_buffer_size
+                    )
+                elif self._buffer_health > 0.8:
+                    # Buffer too full, decrease target
+                    self._target_buffer_size = max(
+                        self._target_buffer_size - 1,
+                        self._min_buffer_size
+                    )
+                
+            except Exception:
+                pass
+    
+    async def _listen_for_interrupts(self):
+        """Listen for client interrupts and control messages."""
+        try:
+            while not self._cancelled:
+                msg = await self.ws.receive_json()
+                
+                if msg.get("type") == "interrupt":
+                    print(f"[{datetime.now()}] [Kyutai] Interrupt received")
+                    self._cancelled = True
+                    self.tts.cancel()
+                    self.bs.cancel()
+                    
+                    # Drain queues
+                    while not self._sentence_queue.empty():
+                        try:
+                            self._sentence_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    while not self._audio_queue.empty():
+                        try:
+                            self._audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    break
+                
+                elif msg.get("type") == "ping":
+                    await self.ws.send_json({"type": "pong"})
+                
+                elif msg.get("type") == "buffer_adjust":
+                    # Client can request buffer adjustment
+                    target = msg.get("target_size", self._target_buffer_size)
+                    self._target_buffer_size = max(
+                        self._min_buffer_size,
+                        min(target, self._max_buffer_size)
+                    )
+        
+        except Exception:
+            pass
+    
+    async def _send_idle_transition(self):
+        """Send smooth idle transition frames."""
+        idle_frames = generate_idle_frames(
+            num_frames=30,
+            output_dim=self.config.get("output_dim", 68),
+            last_active_frame=self._last_blendshape_frame,
+            ease_to_neutral=True,
+        )
+        await self.ws.send_json(
+            make_idle_frames_msg(
+                frames=idle_frames.tolist(),
+                start_time=self._cumulative_audio_time,
+                end_time=self._cumulative_audio_time + 30 / 60.0,
+                frame_rate=60,
+            )
+        )
+    
+    async def _send_status(self, status: str, message: str):
+        """Send status message to client."""
+        try:
+            await self.ws.send_json(make_status_msg(status, message))
+        except Exception:
+            pass
+    
+    async def _handle_error(self, stage: str, error: Exception):
+        """Handle errors with graceful degradation."""
+        self._error_count += 1
+        
+        if self._error_count >= self._max_errors:
+            await self._send_status(
+                "error",
+                f"Too many errors in {stage} stage. Stopping pipeline."
+            )
+            self._cancelled = True
+        else:
+            await self._send_status(
+                "warning",
+                f"Error in {stage} stage (attempt {self._error_count}): {str(error)}"
+            )
+    
+    async def _generate_silence_chunk(self, sentence_idx: int):
+        """Generate a silent audio chunk as fallback."""
+        from streaming.tts_worker import AudioChunk
+        
+        duration = 0.5  # 500ms silence
+        samples = int(duration * (self.tts.sr or 24000))
+        audio_np = np.zeros(samples, dtype=np.float32)
+        
+        import io
+        import scipy.io.wavfile as wavfile
+        
+        buf = io.BytesIO()
+        audio_int16 = (audio_np * 32767.0).astype(np.int16)
+        wavfile.write(buf, self.tts.sr or 24000, audio_int16)
+        buf.seek(0)
+        audio_bytes = buf.read()
+        
+        chunk = AudioChunk(
+            sentence_index=sentence_idx,
+            audio_bytes=audio_bytes,
+            audio_np=audio_np,
+            sample_rate=self.tts.sr or 24000,
+            start_time=self._cumulative_audio_time,
+            duration=duration,
+        )
+        
+        self._cumulative_audio_time += duration
+        await self._audio_queue.put(chunk)
+    
+    async def _send_fallback_frames(self, chunk_idx: int, audio_chunk):
+        """Send fallback blendshape frames using last successful frame."""
+        if self._last_successful_frame is not None:
+            # Repeat last successful frame
+            num_frames = int(audio_chunk.duration * 60)  # 60 fps
+            frames = np.tile(self._last_successful_frame, (num_frames, 1))
+            
+            await self.ws.send_json(
+                make_blendshapes_msg(
+                    chunk_index=chunk_idx,
+                    sentence_index=audio_chunk.sentence_index,
+                    frames=frames.tolist(),
+                    start_time=audio_chunk.start_time,
+                    end_time=audio_chunk.start_time + audio_chunk.duration,
+                    frame_rate=60,
+                    is_final=False,
+                )
+            )

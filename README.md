@@ -1,276 +1,276 @@
-# 🚀 AI Inference API — RAG → TTS → Blendshapes
+# Streaming Avatar API with Qwen3-TTS
 
-This repository contains a GPU-accelerated AI inference service that processes documents or URLs, answers questions using an LLM, generates speech audio, and finally converts that audio into facial blendshape animation data — all in a single API request.
+A high-performance FastAPI server for generating realistic avatar animations with synchronized speech and facial blendshapes using Qwen3-TTS and RAG (Retrieval-Augmented Generation).
 
-The system is designed for production deployment using a persistent GPU Pod with automated CI/CD.
+## Features
 
----
+- 🎙️ **Qwen3-TTS Integration**: Voice cloning with natural prosody
+- 🎭 **52 ARKit Blendshapes**: Real-time facial animation generation
+- 🔄 **WebSocket Streaming**: Low-latency audio and blendshape streaming
+- 📚 **RAG Pipeline**: Context-aware responses using Groq LLM
+- 🐳 **Docker Ready**: Easy deployment with Docker
+- ⚡ **Optimized Performance**: CPU and CUDA support
 
-## ✨ Key Features
+## Architecture
 
-- **Single `/infer` API endpoint**
-  - One request → one response
-  - No intermediate steps required
-
-- **End-to-end pipeline**
-  - RAG (document understanding)
-  - LLM inference
-  - Text-to-Speech (Bark)
-  - Audio → Facial Blendshapes
-
-- **GPU-accelerated**
-  - Models are loaded once and kept warm in memory
-
-- **Supports multiple input types**
-  - URL
-  - File uploads
-
-- **JSON & CSV output**
-  - Blendshapes returned directly
-
-- **Automated CI/CD**
-  - GitHub → Docker Hub → RunPod GPU Pod
-
----
-
-## 🧠 High-Level Architecture
 ```
-Client Request
-   |
-   v
-/infer API
-   |
-   ├── Text extraction (URL / Files)
-   ├── RAG (Embeddings + FAISS + LLM)
-   ├── Bark TTS (Text → Audio)
-   ├── Blendshape Model (Audio → Facial Data)
-   |
-   v
-JSON / CSV Response
+User Query → RAG (Groq LLM) → Answer Text
+                                    ↓
+                            Qwen3-TTS (Voice Cloning)
+                                    ↓
+                              Audio (12kHz WAV)
+                                    ↓
+                          Blendshape Model (Transformer)
+                                    ↓
+                        52 ARKit Facial Blendshapes
 ```
 
----
+## Quick Start
 
-## Technology Stack
+### Prerequisites
 
-| Component | Technology |
-|-----------|------------|
-| **Backend** | FastAPI |
-| **LLM** | Groq (via LangChain) |
-| **RAG** | HuggingFace Embeddings + FAISS |
-| **TTS** | Bark (Transformers) |
-| **Facial Animation** | Custom blendshape model |
-| **ML Framework** | PyTorch |
-| **Deployment** | RunPod GPU Pod |
-| **CI/CD** | GitHub Actions + Docker Hub |
+- Docker and Docker Compose
+- GROQ API Key (for LLM)
+- 4GB+ RAM
+- (Optional) NVIDIA GPU for faster inference
 
----
+### Installation
 
-## GPU Requirements
-
-Based on real production testing:
-
-| Resource | Usage |
-|----------|-------|
-| **Peak VRAM** | ~8 GB |
-| **Recommended GPU** | 12–16 GB VRAM |
-| **Tested GPU** | RTX 4000 Ada (20 GB) |
-| **Avg /infer latency** | ~60 seconds |
-
-The application runs safely with significant GPU headroom.
-
----
-
-## API Overview
-
-### `POST /infer`
-
-Unified inference endpoint.
-
-```markdown
-NOTE: For hitting individual APIs, refer to the Swagger documentation at `http://localhost:7860/docs` or your deployed host URL.
-```
-
-#### What it does
-
-- Accepts a question
-- Accepts either URL or files (user choice)
-- Runs the full AI pipeline
-- Returns final blendshapes (and optional audio / CSV)
-
----
-
-## 📥 Request Format
-
-### Required
-
-- `request_raw` → JSON string with inference parameters
-- `url` → Website URL or `files` → One or more documents or `both`
-
----
-
-# API Usage Examples
-
-## Example CURL Requests
-
-## ✅ Minimal working CURL (URL only)
+1. Clone the repository:
 ```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Summarize this","return_csv":true}' \
-  -F 'url=https://example.com'
+git clone <your-repo-url>
+cd fastapi-main
 ```
 
----
-
-## ✅ Files only
+2. Set up environment variables:
 ```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Summarize this"}' \
-  -F 'files=@document.pdf'
+# Create .env file
+echo "GROQ_API_KEY=your_groq_api_key_here" > .env
 ```
 
----
-
-## ✅ Files + URL
+3. Build and run with Docker:
 ```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Compare these sources"}' \
-  -F 'url=https://example.com' \
-  -F 'files=@doc1.pdf'
+# Linux/Mac
+./docker-run.sh
+
+# Windows
+docker-run.bat
 ```
 
----
+4. Access the API:
+```
+http://localhost:7860
+```
 
-## 📝 Notes
+## API Endpoints
 
-- Replace `localhost:7860` with your deployed host/IP
-- Replace `@document.pdf` with the actual path to your file
-- The `request_raw` field must be a valid JSON string
-- Multiple files can be uploaded by adding more `-F 'files=@...'` flags
-
----
-
-## 🔧 Additional Options
-
-### Return audio in response
+### Health Check
 ```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Explain this","return_audio":true}' \
-  -F 'url=https://example.com'
+GET /health
 ```
 
-### Custom voice preset
+### Process Content
 ```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Read this aloud","voice_preset":"v2/en_speaker_6"}' \
-  -F 'files=@document.pdf'
-```
+POST /process
+Content-Type: multipart/form-data
 
-### Multiple files
-```bash
-curl -X POST http://localhost:7860/infer \
-  -F 'request_raw={"question":"Analyze all documents"}' \
-  -F 'files=@doc1.pdf' \
-  -F 'files=@doc2.docx' \
-  -F 'files=@data.xlsx'
-```
-
----
-
-## 📤 Response Format
-```json
 {
-  "answer": "Generated answer text",
-  "blendshapes": [[0.01, 0.03, ...]],
-  "audio_base64": null,
-  "csv": "0.01,0.03,..."
+  "url": "https://example.com/article"
 }
 ```
 
----
-
-## 🛠 Local Development
-
-### 1️⃣ Create virtual environment
+### Query with TTS
 ```bash
-python -m venv venv
-source venv/bin/activate
+POST /query
+Content-Type: application/json
+
+{
+  "session_id": "uuid",
+  "question": "What is this about?"
+}
 ```
 
-### 2️⃣ Install dependencies
+### Audio to Blendshapes
 ```bash
+POST /audio_to_blendshapes
+Content-Type: application/octet-stream
+
+<audio_bytes>
+```
+
+### WebSocket Streaming
+```javascript
+ws://localhost:7860/ws/infer/kyutai
+
+// Send
+{
+  "type": "start",
+  "session_id": "uuid",
+  "question": "Tell me more",
+  "use_qwen": true
+}
+
+// Receive
+{
+  "type": "audio_chunk",
+  "audio_base64": "...",
+  "blendshapes": {...}
+}
+```
+
+## Configuration
+
+### Blendshape Model Config
+Edit `utils/model/config.json`:
+```json
+{
+  "input_dim": 80,
+  "output_dim": 52,
+  "hidden_dim": 512,
+  "n_layers": 6,
+  "num_heads": 8,
+  "use_half_precision": false
+}
+```
+
+### TTS Settings
+- **Model**: Qwen3-TTS-12Hz-0.6B-Base
+- **Sample Rate**: 12kHz
+- **Voice Cloning**: 3-second reference audio
+- **Languages**: 10+ supported
+
+## Project Structure
+
+```
+.
+├── api.py                          # Main FastAPI application
+├── streaming/
+│   ├── qwen_tts_worker.py         # Qwen3-TTS integration
+│   ├── blendshape_worker.py       # Blendshape generation
+│   ├── kyutai_coordinator.py      # Streaming coordinator
+│   └── optimized_blendshape_worker.py
+├── utils/
+│   └── model/
+│       ├── model.py               # Blendshape model architecture
+│       ├── model.pth              # Trained weights (download separately)
+│       └── config.json            # Model configuration
+├── requirements.txt               # Python dependencies
+├── Dockerfile                     # Docker configuration
+└── docker-compose.yml            # Docker Compose setup
+```
+
+## Model Downloads
+
+The blendshape model is downloaded automatically on first run. If needed, download manually:
+
+```bash
+python download_model.py
+```
+
+## Performance
+
+- **Startup Time**: ~5 seconds
+- **TTS Generation**: ~5 minutes (CPU) / ~30 seconds (GPU)
+- **Blendshape Generation**: ~1 second per second of audio
+- **Memory Usage**: ~2GB (CPU) / ~4GB (GPU)
+
+## Improving Voice Expressiveness
+
+The default voice uses synthetic reference audio. For more natural speech:
+
+1. Record 3-5 seconds of expressive speech
+2. Save as WAV (24kHz recommended)
+3. Update the worker to use your recording
+
+See `IMPROVING_VOICE_EXPRESSIVENESS.md` for details.
+
+## Development
+
+### Running Tests
+```bash
+pytest
+```
+
+### Local Development
+```bash
+# Install dependencies
 pip install -r requirements.txt
+
+# Run server
+uvicorn api:app --host 0.0.0.0 --port 7860 --reload
 ```
 
-### 3️⃣ Run API
+## Docker Commands
+
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 7860
+# Build image
+docker build -t streaming-avatar-api .
+
+# Run container
+docker run -p 7860:7860 --env-file .env streaming-avatar-api
+
+# View logs
+docker logs streaming-avatar-api
+
+# Restart
+docker restart streaming-avatar-api
 ```
 
-### 4️⃣ Swagger UI
-```
-http://localhost:7860/docs
-```
+## Troubleshooting
+
+### Model Not Loading
+- Check `utils/model/model.pth` exists
+- Verify file size (~600MB)
+- Run `python download_model.py`
+
+### Out of Memory
+- Reduce batch size in config
+- Use CPU instead of GPU
+- Close other applications
+
+### Slow Generation
+- Use GPU if available
+- Reduce audio length
+- Enable half-precision (GPU only)
+
+## API Documentation
+
+Interactive API docs available at:
+- Swagger UI: `http://localhost:7860/docs`
+- ReDoc: `http://localhost:7860/redoc`
+
+## Technologies
+
+- **FastAPI**: Web framework
+- **Qwen3-TTS**: Text-to-speech with voice cloning
+- **PyTorch**: Deep learning framework
+- **Transformers**: Model architecture
+- **LangChain**: RAG pipeline
+- **Groq**: LLM inference
+- **FAISS**: Vector similarity search
+- **WebSockets**: Real-time streaming
+
+## License
+
+[Your License Here]
+
+## Contributing
+
+Contributions welcome! Please open an issue or PR.
+
+## Support
+
+For issues and questions:
+- GitHub Issues: [Your repo issues]
+- Documentation: See `/docs` folder
+
+## Acknowledgments
+
+- Qwen Team for Qwen3-TTS
+- Groq for LLM API
+- HuggingFace for model hosting
+- Community contributors
 
 ---
 
-## 🐳 Docker
-
-### Build locally
-```bash
-docker build -t infer-api .
-```
-
-### Run container
-```bash
-docker run --rm -it -p 7860:7860 infer-api uvicorn api:app --host 0.0.0.0 --port 7860
-
-```
-
----
-
-## 🚀 Deployment on RunPod (Production)
-
-- Deployed as a **persistent GPU Pod**
-- GPU stays warm (no serverless cold starts)
-- Port **7860** exposed
-- Docker image pulled from **Docker Hub**
-
----
-
-## 🔄 CI/CD Flow
-```
-GitHub push
-   ↓
-GitHub Actions
-   ↓
-Docker image build
-   ↓
-Push to Docker Hub (:latest)
-   ↓
-RunPod Pod restart (Manually)
-   ↓
-Updated service live
-```
-
-### GitHub Actions
-
-- Automatically builds and pushes Docker images on every push to `main`
-- Disk cleanup included for large ML builds
-
----
-
-## 🔐 Credentials Required (for CI/CD)
-
-To finalize CI/CD under the client's account:
-
-- Docker Hub username
-- Docker Hub access token
-
-> **Note:** No secrets are hard-coded in the repository.
-
----
-
-## 📧 Contact
-
-contact@sorayia.com
+**Note**: This project uses Qwen3-TTS for voice generation. Bark TTS has been completely removed.

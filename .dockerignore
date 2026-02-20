@@ -1,10 +1,39 @@
+# Git
 .git
+.gitignore
+.gitattributes
+.github
+
+# Python
 __pycache__
 *.pyc
 *.pyo
 *.pyd
-.env
+.pytest_cache
+.mypy_cache
+
+# Virtual environments
 venv
-.cache
-data
-models
+env
+ENV
+.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+.claude
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+
+# Temp/generated
+temp_*/
+reference_audio/
+.cache/

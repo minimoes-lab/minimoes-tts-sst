@@ -96,7 +96,7 @@ def blend_chunks(chunk1, chunk2, overlap):
         
     return np.vstack((blended_chunk, chunk2[actual_overlap:]))
 
-def process_audio_features(audio_features, model, device, config):
+def process_audio_features(audio_features, model, device, config, apply_easing=True):
     # Configuration settings
     frame_length = config['frame_size']  # Number of frames per chunk (e.g., 64)
     overlap = config.get('overlap', 32)  # Number of overlapping frames between chunks
@@ -149,9 +149,11 @@ def process_audio_features(audio_features, model, device, config):
     final_decoded_outputs[:, :61] /= 100  # Normalize specific columns
 
     # Easing effect for smooth start (fades in first 0.2 seconds)
-    ease_duration_frames = min(int(0.1 * 60), final_decoded_outputs.shape[0])
-    easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
-    final_decoded_outputs[:ease_duration_frames] *= easing_factors
+    # In streaming mode, only apply to the first sentence chunk
+    if apply_easing:
+        ease_duration_frames = min(int(0.1 * 60), final_decoded_outputs.shape[0])
+        easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
+        final_decoded_outputs[:ease_duration_frames] *= easing_factors
 
     # Zero out unnecessary columns (optional post-processing)
     final_decoded_outputs = zero_columns(final_decoded_outputs)

@@ -1,23 +1,26 @@
-# Use official lightweight Python 3.9 image
-FROM python:3.9-slim
+# Use official Python 3.10 image (langchain-classic requires 3.10+)
+FROM python:3.10-slim
 
 # Environment variables for Python & pip
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
     PIP_DISABLE_PIP_VERSION_CHECK=on \
     PIP_DEFAULT_TIMEOUT=100 \
-    NUMBA_DISABLE_CACHE=1
+    NUMBA_DISABLE_CACHE=1 \
+    TOKENIZERS_PARALLELISM=false \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies required by some Python packages
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
     git \
     ffmpeg \
     libsndfile1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (Docker caching optimization)
@@ -27,25 +30,30 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# Copy the application code
 COPY . /app
-# 1. Ensure wget is installed
-RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
-# 3. Delete the fake pointer file using the path you requested
-RUN rm utils/model/model.pth
+# Download the blendshape model from HuggingFace
+RUN echo "Downloading blendshape model..." \
+    && rm -f utils/model/model.pth \
+    && wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth \
+    && echo "Model downloaded successfully:" \
+    && ls -lh utils/model/model.pth
 
-# 4. Download the REAL 600MB model into that exact folder
-RUN wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth
+# Create directories
+RUN mkdir -p /app/generated_audio /app/demo_outputs
 
-# 5. VERIFY: The logs should now show ~600M instead of 134
-RUN ls -lh utils/model/model.pth
-# Check if the file is actually there during the build
-RUN ls -lh /utils/model/model.pth || echo "FILE NOT FOUND DURING BUILD"
-# Expose the port the app will run on
+# Make demo scripts executable
+RUN chmod +x /app/*.py || true
+
+# Expose the port
 EXPOSE 7860
 
-#CMD ["gunicorn", "api:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "1", "--bind", "0.0.0.0:7860", "--timeout", "30000", "--graceful-timeout", "30000"]
-CMD ["uvicorn","api:app","--workers","1","--timeout","30000","--graceful-timeout","30000","--bind","0.0.0.0:7860","--worker-class","uvicorn.workers.UvicornWorker"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:7860/health || exit 1
+
+# Run the application
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", "--timeout-keep-alive", "300"]
 
 

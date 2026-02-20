@@ -21,7 +21,7 @@ import re
 import tempfile
 import threading
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -31,19 +31,19 @@ from typing import List, Optional, Dict, Any
 import torch
 import numpy as np
 import pandas as pd
-import docx
+from docx import Document
 from pptx import Presentation
 import zipfile
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
-from transformers import AutoProcessor, BarkModel
+# Bark removed - using Qwen3-TTS only
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 # =====================================================================================
 # 1. API Initialization & Configuration
@@ -52,12 +52,12 @@ from langchain.prompts import PromptTemplate
 
 from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
-from utils.config import config
+from utils.config import config, get_blendshape_names, blendshapes_to_named_frames
 import multiprocessing
 app = FastAPI(
     title="Intelligent Document & Web API",
-    description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Bark TTS.",
-    version="2.0.1" # Version updated
+    description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Qwen3-TTS.",
+    version="2.0.1"
 )
 
 
@@ -87,11 +87,18 @@ print(f"DEBUG: Absolute path is: {model_path}")
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
 
-    audio_bytes = await request.body()    
+    audio_bytes = await request.body()
     generated_facial_data = generate_facial_data_from_bytes(audio_bytes, blendshape_model, device, config)
     generated_facial_data_list = generated_facial_data.tolist() if isinstance(generated_facial_data, np.ndarray) else generated_facial_data
-
-    return JSONResponse(content={'blendshapes': generated_facial_data_list})
+    
+    frames = blendshapes_to_named_frames(generated_facial_data_list)
+    
+    return JSONResponse(content={
+        'frame_rate': config['frame_rate'],
+        'total_frames': len(frames),
+        'frames': frames,
+        'mapping': get_blendshape_names(),
+    })
 
 
 STATIC_AUDIO_DIR = "/app/generated_audio"
@@ -116,8 +123,6 @@ if not GROQ_API_KEY:
 
 conversations: Dict[str, ConversationalRetrievalChain] = {}
 embeddings_model = None
-bark_processor, bark_model, bark_sr, bark_device = None, None, None, None
-bark_available = False
 
 # =====================================================================================
 # 2. High-Quality RAG Prompt Template
@@ -152,50 +157,10 @@ RAG_PROMPT = PromptTemplate.from_template(PROFESSIONAL_RAG_PROMPT_TEMPLATE)
 # =====================================================================================
 from fastapi.responses import PlainTextResponse
 
-@app.get("/tts_diagnose")
-async def tts_diagnose():
-    """Run a short TTS diagnostic and return useful debug details."""
-    debug = {}
-    debug["bark_available"] = bool(bark_available)
-    debug["bark_processor_type"] = repr(type(bark_processor))
-    debug["bark_model_type"] = repr(type(bark_model))
-    debug["bark_device"] = repr(bark_device)
-    debug["bark_sr"] = repr(bark_sr)
-
-    # Short test text
-    test_text = "Diagnostic test. If you receive audio, the TTS pipeline works."
-
-    try:
-        print(f"[{datetime.now()}] TTS DIAGNOSE: starting generation test...")
-        b64 = generate_speech_content_base64(test_text, voice_preset=None)
-        if b64:
-            debug["audio_base64_len"] = len(b64)
-            # Save to file for convenience (optional)
-            try:
-                import base64 as _b64, os as _os
-                out = "tts_diagnose_out.wav"
-                with open(out, "wb") as f:
-                    f.write(_b64.b64decode(b64))
-                debug["wrote_file"] = out
-                debug["wrote_file_size"] = _os.path.getsize(out)
-            except Exception as exf:
-                debug["save_file_error"] = repr(exf)
-        else:
-            debug["audio_base64_len"] = 0
-            debug["note"] = "generate_speech_content_base64 returned None"
-    except Exception as e:
-        debug["exception"] = repr(e)
-
-    # Return a plain JSON-like text for easy copying into the chat
-    import json
-    return PlainTextResponse(json.dumps(debug, indent=2))
-
 @app.on_event("startup")
-
-    
 async def load_models():
     """Load heavy ML models once when the API starts up."""
-    global embeddings_model, bark_processor, bark_model, bark_sr, bark_device, bark_available
+    global embeddings_model
 
     print(f"[{datetime.now()}] Starting model loading...")
     
@@ -204,31 +169,8 @@ async def load_models():
     embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'})
     embeddings_end_time = time.time()
     print(f"[{datetime.now()}] Embeddings model loaded successfully in {embeddings_end_time - embeddings_start_time:.2f} seconds.")
-
-    try:
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"[{datetime.now()}] Using device for Bark TTS: {device_str}")
-        device = torch.device(device_str)
-
-        print(f"[{datetime.now()}] Loading Bark processor...")
-        bark_processor_start_time = time.time()
-        processor = AutoProcessor.from_pretrained("suno/bark")
-        bark_processor_end_time = time.time()
-        print(f"[{datetime.now()}] Bark processor loaded in {bark_processor_end_time - bark_processor_start_time:.2f} seconds.")
-
-        print(f"[{datetime.now()}] Loading Bark model...")
-        bark_model_start_time = time.time()
-        model = BarkModel.from_pretrained("suno/bark").to(device)
-        bark_model_end_time = time.time()
-        print(f"[{datetime.now()}] Bark model loaded in {bark_model_end_time - bark_model_start_time:.2f} seconds.")
-
-        bark_processor, bark_model, bark_sr, bark_device = processor, model, model.generation_config.sample_rate, device
-        bark_available = True
-        print(f"[{datetime.now()}] Bark model and processor loaded successfully!")
-    except Exception as e:
-        print(f"[{datetime.now()}] Failed to load Bark model: {e}. TTS will be disabled.")
-        bark_available = False
-    print(f"[{datetime.now()}] Model loading complete.")
+    
+    print(f"[{datetime.now()}] Model loading complete. Using Qwen3-TTS for speech generation.")
 
 # =====================================================================================
 # 4. Pydantic Models for API Data Validation
@@ -243,7 +185,7 @@ class ProcessResponse(BaseModel):
 class QueryRequest(BaseModel):
     session_id: str = Field(..., description="The session ID obtained from the /process endpoint.")
     question: str = Field(..., description="The question to ask the RAG system.")
-    voice_preset: Optional[str] = Field(None, description="Optional voice preset for Bark TTS (e.g., 'v2/en_speaker_6').")
+    voice_preset: Optional[str] = Field(None, description="Optional voice preset for TTS.")
 
 class SourceDocument(BaseModel):
     page_content: str = Field(..., description="The text content of the source chunk.")
@@ -252,7 +194,6 @@ class SourceDocument(BaseModel):
 class QueryResponse(BaseModel):
     answer: str = Field(..., description="The generated answer from the RAG model.")
     source_documents: List[SourceDocument] = Field(..., description="List of source document chunks used for the answer.")
-    # Changed from audio_url to audio_base64
     audio_base64: Optional[str] = Field(None, description="Base64 encoded audio content.")
 
 # =====================================================================================
@@ -391,257 +332,41 @@ def get_rag_chain(text_chunks: List[str]) -> ConversationalRetrievalChain:
 from collections.abc import Mapping
 
 def generate_speech_content_base64(text: str, voice_preset: Optional[str]) -> Optional[str]:
-    print(f"[{datetime.now()}] [IN-MEMORY TTS] Starting speech generation (Base64 encoding).")
-    if not bark_available or not text:
-        print(f"[{datetime.now()}] [IN-MEMORY TTS] Bark TTS not available or no text provided. Skipping.")
+    """Generate speech using Qwen3-TTS and return base64 encoded audio."""
+    print(f"[{datetime.now()}] [Qwen3-TTS] Starting speech generation (Base64 encoding).")
+    if not text:
+        print(f"[{datetime.now()}] [Qwen3-TTS] No text provided. Skipping.")
         return None
-
-    # helpers (unchanged except for small improvements)
-    def to_tensor_strict(obj, device):
-        if torch.is_tensor(obj):
-            # convert small int types to long for indexing
-            if obj.dtype in (torch.int8, torch.int16, torch.int32):
-                obj = obj.long()
-            return obj.to(device)
-        if isinstance(obj, np.ndarray):
-            if np.issubdtype(obj.dtype, np.integer):
-                return torch.tensor(obj, dtype=torch.long, device=device)
-            else:
-                return torch.tensor(obj, dtype=torch.float32, device=device)
-        if isinstance(obj, (list, tuple)):
-            if len(obj) == 0:
-                return torch.tensor([], device=device)
-            if all(isinstance(i, int) for i in obj):
-                return torch.tensor(list(obj), dtype=torch.long, device=device)
-            if all(isinstance(i, (float, int)) for i in obj):
-                return torch.tensor(list(obj), dtype=torch.float32, device=device)
-            converted = [to_tensor_strict(x, device) for x in obj]
-            return type(obj)(converted)
-        try:
-            import pandas as _pd
-            if isinstance(obj, _pd.Series):
-                return to_tensor_strict(obj.to_numpy(), device)
-            if isinstance(obj, _pd.DataFrame):
-                return to_tensor_strict(obj.to_numpy(), device)
-        except Exception:
-            pass
-        try:
-            if hasattr(obj, "__array__"):
-                arr = np.asarray(obj)
-                return to_tensor_strict(arr, device)
-        except Exception:
-            pass
-        return obj
-
-    def recursively_convert(obj, device, path="root"):
-        inventory = []
-        # Mapping-like objects (dict, BatchEncoding, etc.)
-        if isinstance(obj, Mapping):
-            converted = {}
-            for k, v in obj.items():
-                conv, inv = recursively_convert(v, device, path + f".{k}")
-                converted[k] = conv
-                inventory.extend(inv)
-            return converted, inventory
-        # Objects that offer .to(device) (BatchEncoding has .to)
-        if hasattr(obj, "to") and callable(obj.to) and not torch.is_tensor(obj):
-            try:
-                moved = obj.to(device)
-                # If it's a mapping after moving, convert its items
-                if isinstance(moved, Mapping):
-                    converted = {}
-                    for k, v in moved.items():
-                        conv, inv = recursively_convert(v, device, path + f".{k}")
-                        converted[k] = conv
-                        inventory.extend(inv)
-                    return converted, inventory
-                # otherwise treat the moved object as a leaf (fall back)
-                obj = moved
-            except Exception as e:
-                # ignore failures to .to(); we'll still try to convert internal pieces
-                print(f"[{datetime.now()}] [IN-MEMORY TTS] .to(device) attempt failed for {type(obj)}: {e}")
-
-        if isinstance(obj, (list, tuple)):
-            converted_list = []
-            for i, v in enumerate(obj):
-                conv, inv = recursively_convert(v, device, path + f"[{i}]")
-                converted_list.append(conv)
-                inventory.extend(inv)
-            return (type(obj)(converted_list), inventory)
-
-        # leaf node: convert arrays/tensors where possible
-        converted = to_tensor_strict(obj, device)
-        if torch.is_tensor(converted):
-            inv = [(path, tuple(converted.shape), str(converted.dtype), str(converted.device))]
-        else:
-            inv = [(path, None, repr(type(converted)), None)]
-        return converted, inv
 
     try:
-        start = time.time()
-        # prepare inputs using multiple safe signatures (your existing pattern)
-        inputs = None
-        attempts = [
-            {"voice_preset": voice_preset, "return_tensors": "pt", "padding": True},
-            {"voice_preset": voice_preset, "return_tensors": "pt"},
-            {"return_tensors": "pt", "padding": True},
-            {"return_tensors": "pt"},
-            {}
-        ]
-        last_exc = None
-        for kw in attempts:
-            try:
-                safe_kw = {k: v for k, v in kw.items() if v is not None}
-                inputs = bark_processor(text, **safe_kw)
-                print(f"[{datetime.now()}] [IN-MEMORY TTS] Processor success with args: {list(safe_kw.keys())}")
-                break
-            except Exception as e:
-                last_exc = e
-                print(f"[{datetime.now()}] [IN-MEMORY TTS] Processor attempt failed with {list(kw.keys())}: {e}")
-
-        if inputs is None:
-            # tokenizer fallback
-            if hasattr(bark_processor, "tokenizer"):
-                try:
-                    inputs = bark_processor.tokenizer(text, return_tensors="pt", padding=True)
-                    print(f"[{datetime.now()}] [IN-MEMORY TTS] Tokenizer fallback used.")
-                except Exception as e:
-                    print(f"[{datetime.now()}] [IN-MEMORY TTS] Tokenizer fallback failed: {e}")
-            if inputs is None:
-                raise RuntimeError("Failed to prepare processor inputs: " + repr(last_exc))
-
-        # IMPORTANT: Many transformers objects (BatchEncoding) implement `.to(device)`.
-        # Try to move the whole object first — this usually solves mixed-device issues.
-        try:
-            if hasattr(inputs, "to") and callable(inputs.to):
-                try:
-                    inputs = inputs.to(bark_device)
-                    print(f"[{datetime.now()}] [IN-MEMORY TTS] Called inputs.to({bark_device}) successfully.")
-                except Exception as e:
-                    print(f"[{datetime.now()}] [IN-MEMORY TTS] inputs.to(...) failed: {e}")
-        except Exception:
-            pass
-
-        # Convert EVERYTHING recursively into tensors on device
-        converted_inputs, inventory = recursively_convert(inputs, bark_device, path="inputs")
-        print(f"[{datetime.now()}] [IN-MEMORY TTS] Inventory of converted inputs (path, shape, dtype, device):")
-        for item in inventory:
-            print("  ", item)
-
-        # Ensure attention_mask exists and is long on device
-        if isinstance(converted_inputs, dict) and "input_ids" in converted_inputs and "attention_mask" not in converted_inputs:
-            try:
-                input_ids = converted_inputs["input_ids"]
-                if torch.is_tensor(input_ids):
-                    pad_id = getattr(bark_model.config, "pad_token_id", None)
-                    if pad_id is not None:
-                        mask = (input_ids != int(pad_id)).long().to(bark_device)
-                    else:
-                        mask = torch.ones_like(input_ids, dtype=torch.long, device=bark_device)
-                    converted_inputs["attention_mask"] = mask
-                    print(f"[{datetime.now()}] [IN-MEMORY TTS] Built attention_mask shape {mask.shape} on {mask.device}.")
-            except Exception as e:
-                print(f"[{datetime.now()}] [IN-MEMORY TTS] Failed building attention_mask: {e}")
-
-        # Off-device detection (improved to inspect Mapping objects)
-        def find_off_device(obj, desired_device, prefix=""):
-            off = []
-            if torch.is_tensor(obj):
-                if str(obj.device) != str(desired_device):
-                    off.append((prefix or "leaf", tuple(obj.shape), str(obj.dtype), str(obj.device)))
-                return off
-            if isinstance(obj, Mapping):
-                for k, v in obj.items():
-                    off.extend(find_off_device(v, desired_device, prefix + f".{k}"))
-                return off
-            if isinstance(obj, (list, tuple)):
-                for i, v in enumerate(obj):
-                    off.extend(find_off_device(v, desired_device, prefix + f"[{i}]"))
-                return off
-            # try attributes for objects that may contain tensors
-            if hasattr(obj, "__dict__"):
-                for k, v in vars(obj).items():
-                    off.extend(find_off_device(v, desired_device, prefix + f".{k}"))
-            return off
-
-        off = find_off_device(converted_inputs, bark_device, "inputs")
-        if off:
-            print(f"[{datetime.now()}] [IN-MEMORY TTS] WARNING: Found tensors off-device after conversion: {off}")
-            # Optionally raise here to fail-fast and debug
-            # raise RuntimeError(f"Found off-device tensors: {off}")
-        else:
-            print(f"[{datetime.now()}] [IN-MEMORY TTS] All tensors appear on {bark_device}.")
-
-        # Prepare pad_token_id if available
-        pad_token_id = None
-        try:
-            cfg_pad = getattr(bark_model.config, "pad_token_id", None)
-            if cfg_pad is not None and int(cfg_pad) >= 0:
-                pad_token_id = int(cfg_pad)
-        except Exception:
-            pad_token_id = None
-
-        # Generate audio
-        print(f"[{datetime.now()}] [IN-MEMORY TTS] Calling Bark model.generate(...)")
-        bark_model.eval()
-        with torch.no_grad():
-            try:
-                gen_kwargs = {"pad_token_id": pad_token_id} if pad_token_id is not None else {}
-                bark_output = bark_model.generate(**converted_inputs, **gen_kwargs)
-            except TypeError as e:
-                print(f"[{datetime.now()}] [IN-MEMORY TTS] generate(...) TypeError with gen_kwargs: {e}. Retrying without gen_kwargs.")
-                bark_output = bark_model.generate(**converted_inputs)
-
-        # (the rest of your output handling -> to numpy, int16, wav writing) unchanged...
-        audio_array = None
-        if isinstance(bark_output, dict):
-            for key in ("audio", "audios", "waveform", "wav", "output_audio"):
-                if key in bark_output:
-                    audio_array = bark_output[key]; break
-            if audio_array is None and "outputs" in bark_output:
-                cand = bark_output["outputs"]
-                if isinstance(cand, (list, tuple)) and len(cand) > 0:
-                    audio_array = cand[0]
-        elif isinstance(bark_output, (list, tuple)):
-            audio_array = bark_output[0]
-        else:
-            audio_array = bark_output
-
-        if audio_array is None:
-            raise RuntimeError("Could not locate waveform in Bark model output.")
-
-        if hasattr(audio_array, "cpu"):
-            audio_np = audio_array.cpu().numpy().squeeze()
-        else:
-            audio_np = np.asarray(audio_array).squeeze()
-
-        if audio_np.ndim > 1:
-            if audio_np.shape[0] <= 2 and audio_np.shape[0] < audio_np.shape[-1]:
-                audio_np = audio_np.mean(axis=0)
-            else:
-                audio_np = audio_np.mean(axis=-1)
-        try:
-            sr = int(bark_sr)
-        except Exception:
-            sr = 24000
-        if np.issubdtype(audio_np.dtype, np.floating):
-            audio_np = np.clip(audio_np, -1.0, 1.0)
-            audio_int16 = (audio_np * 32767.0).astype(np.int16)
-        else:
-            audio_int16 = audio_np.astype(np.int16)
-
-        buf = io.BytesIO()
-        wavfile.write(buf, sr, audio_int16)
-        buf.seek(0)
-        bts = buf.read()
-        b64 = base64.b64encode(bts).decode("utf-8")
-        end = time.time()
-        print(f"[{datetime.now()}] [IN-MEMORY TTS] Finished in {end-start:.2f}s; base64 len {len(b64)}")
-        return b64
-
+        # Use Qwen TTS worker
+        from streaming.qwen_tts_worker import QwenTTSWorker
+        
+        # Use CPU/CUDA based on availability
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        worker = QwenTTSWorker(device=device, use_qwen3=True)
+        
+        # Generate audio synchronously
+        result = worker._generate_audio_sync(text, voice_preset)
+        
+        if result is None:
+            print(f"[{datetime.now()}] [Qwen3-TTS] Failed to generate audio.")
+            return None
+        
+        audio_np, wav_bytes = result
+        
+        # Encode to base64
+        audio_base64 = base64.b64encode(wav_bytes).decode("utf-8")
+        
+        print(f"[{datetime.now()}] [Qwen3-TTS] Audio generated successfully. Size: {len(wav_bytes)} bytes")
+        return audio_base64
+        
     except Exception as e:
-        print(f"[{datetime.now()}] [IN-MEMORY TTS] ERROR during speech generation/encoding: {repr(e)}")
+        print(f"[{datetime.now()}] [Qwen3-TTS] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         return None
+
 
 # =====================================================================================
 # 7. API Endpoints
@@ -754,17 +479,13 @@ async def query_session(request: QueryRequest, background_tasks: BackgroundTasks
         ]
         # --- END FIX ---
 
-        audio_base64_content = None # Changed from audio_url
-        if bark_available:
-            print(f"[{datetime.now()}] Bark TTS is available. Generating audio (Base64).")
-            # Call the new function that returns base64 content
-            audio_base64_content = generate_speech_content_base64(text=answer, voice_preset=request.voice_preset)
-            if audio_base64_content:
-                print(f"[{datetime.now()}] Base64 audio generated and ready for response.")
-            else:
-                print(f"[{datetime.now()}] Failed to generate Base64 audio content.")
+        audio_base64_content = None
+        print(f"[{datetime.now()}] Generating audio with Qwen3-TTS...")
+        audio_base64_content = generate_speech_content_base64(text=answer, voice_preset=request.voice_preset)
+        if audio_base64_content:
+            print(f"[{datetime.now()}] Base64 audio generated and ready for response.")
         else:
-            print(f"[{datetime.now()}] Bark TTS not available. Skipping audio generation.")
+            print(f"[{datetime.now()}] Failed to generate Base64 audio content.")
 
         query_end_time = time.time()
         print(f"[{datetime.now()}] /query endpoint finished in {query_end_time - query_start_time:.2f} seconds.")
@@ -790,14 +511,16 @@ class InferRequest(BaseModel):
     files: Optional[List[str]] = None  # future-safe
 
     # Optional controls
-    voice_preset: Optional[str] = Field(None, description="Bark voice preset")
+    voice_preset: Optional[str] = Field(None, description="Voice preset for TTS")
     return_audio: bool = Field(False, description="Return audio base64 or not")
     return_csv: bool = Field(False, description="Return blendshapes as CSV")
 
 
 class InferResponse(BaseModel):
     answer: str
-    blendshapes: List[List[float]]
+    blendshapes: List[dict]
+    mapping: List[str] = Field(default_factory=list, description="Blendshape index-to-name mapping")
+    frame_rate: int = Field(default=60, description="Blendshape frame rate")
     audio_base64: Optional[str] = None
     csv: Optional[str] = None
 
@@ -870,16 +593,15 @@ async def infer(
     # 3. Text → Audio
     # ---------------------------------------------
     audio_base64 = None
-    if bark_available:
-        audio_base64 = generate_speech_content_base64(
-            answer,
-            voice_preset=req.voice_preset
-        )
+    audio_base64 = generate_speech_content_base64(
+        answer,
+        voice_preset=req.voice_preset
+    )
 
     # ---------------------------------------------
     # 4. Audio → Blendshapes
     # ---------------------------------------------
-    blendshapes = []
+    blendshapes_raw = []
     if audio_base64:
         audio_bytes = base64.b64decode(audio_base64)
         facial_data = generate_facial_data_from_bytes(
@@ -888,28 +610,254 @@ async def infer(
             device,
             config
         )
-        blendshapes = facial_data.tolist()
+        blendshapes_raw = facial_data.tolist()
+
+    named_frames = blendshapes_to_named_frames(blendshapes_raw)
 
     # ---------------------------------------------
-    # 5. Optional CSV
+    # 5. Optional CSV (with header row)
     # ---------------------------------------------
     csv_data = None
-    if req.return_csv and blendshapes:
-        import csv, io
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerows(blendshapes)
+    if req.return_csv and blendshapes_raw:
+        import csv as csv_mod, io as io_mod
+        output = io_mod.StringIO()
+        writer = csv_mod.writer(output)
+        header = ["timestamp", "frame_index"] + get_blendshape_names()
+        writer.writerow(header)
+        frame_rate = config['frame_rate']
+        for idx, row in enumerate(blendshapes_raw):
+            writer.writerow([round(idx / frame_rate, 6), idx] + [round(float(v), 6) for v in row])
         csv_data = output.getvalue()
 
     print(f"[INFER] Done in {time.time() - start:.2f}s")
 
     return InferResponse(
         answer=answer,
-        blendshapes=blendshapes,
+        blendshapes=named_frames,
+        mapping=get_blendshape_names(),
+        frame_rate=config['frame_rate'],
         audio_base64=audio_base64 if req.return_audio else None,
         csv=csv_data
     )
 
 
+# =====================================================================================
+# 8. Streaming WebSocket Endpoints
+# =====================================================================================
+
+# Streaming imports
+from streaming.blendshape_worker import BlendshapeWorker
+from streaming.kyutai_coordinator import KyutaiStreamCoordinator
+from streaming.qwen_tts_worker import QwenTTSWorker
+from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
+from streaming.performance_monitor import get_monitor
 
 
+@app.websocket("/ws/infer")
+async def websocket_infer(websocket: WebSocket):
+    """
+    Real-time streaming inference over WebSocket (original implementation).
+
+    Client flow:
+      1. Connect to ws://.../ws/infer
+      2. Send: {"type": "start", "session_id": "...", "question": "..."}
+      3. Receive progressive: text_chunk, audio_chunk, blendshapes, status
+      4. Optionally send: {"type": "interrupt"} to stop mid-generation
+    """
+    await websocket.accept()
+
+    try:
+        # Wait for the initial "start" message
+        init_msg = await websocket.receive_json()
+
+        if init_msg.get("type") != "start":
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "First message must be type 'start'",
+            })
+            await websocket.close()
+            return
+
+        session_id = init_msg.get("session_id")
+        question = init_msg.get("question")
+        voice_preset = init_msg.get("voice_preset")
+        return_audio = init_msg.get("return_audio", True)
+
+        if not session_id or not question:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "session_id and question are required",
+            })
+            await websocket.close()
+            return
+
+        # Get the RAG chain for this session
+        chain = conversations.get(session_id)
+        if not chain:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "Session not found. Call /process first.",
+            })
+            await websocket.close()
+            return
+
+        # Create workers with Qwen3-TTS
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        from streaming.qwen_tts_worker import QwenTTSWorker
+        from streaming.blendshape_worker import BlendshapeWorker
+        
+        tts_worker = QwenTTSWorker(device=device_str, use_qwen3=True)
+        bs_worker = BlendshapeWorker(blendshape_model, device, config)
+
+        # Create and run coordinator
+        from streaming.kyutai_coordinator import KyutaiStreamCoordinator
+        coordinator = KyutaiStreamCoordinator(
+            websocket=websocket,
+            tts_worker=tts_worker,
+            blendshape_worker=bs_worker,
+        )
+
+        await coordinator.run_streaming_pipeline(
+            rag_chain=chain,
+            question=question,
+            voice_preset=voice_preset,
+            return_audio=return_audio,
+        )
+
+    except WebSocketDisconnect:
+        print(f"[{datetime.now()}] WebSocket client disconnected")
+    except Exception as e:
+        print(f"[{datetime.now()}] WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/infer/kyutai")
+async def websocket_infer_kyutai(websocket: WebSocket):
+    """
+    Enhanced streaming inference using Kyutai delayed streams approach.
+    
+    Features:
+    - Joint audio-visual modeling with controlled delay
+    - Adaptive buffering based on network conditions
+    - Better synchronization between modalities
+    - Graceful error recovery
+    - Performance monitoring
+    
+    Client flow:
+      1. Connect to ws://.../ws/infer/kyutai
+      2. Send: {"type": "start", "session_id": "...", "question": "...", "use_qwen": true}
+      3. Receive progressive: text_chunk, audio_chunk, blendshapes, status
+      4. Send: {"type": "interrupt"} to stop
+      5. Send: {"type": "buffer_adjust", "target_size": 3} to adjust buffering
+    """
+    await websocket.accept()
+    monitor = get_monitor()
+    monitor.reset()
+    
+    try:
+        init_msg = await websocket.receive_json()
+        
+        if init_msg.get("type") != "start":
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "First message must be type 'start'",
+            })
+            await websocket.close()
+            return
+        
+        session_id = init_msg.get("session_id")
+        question = init_msg.get("question")
+        voice_preset = init_msg.get("voice_preset")
+        return_audio = init_msg.get("return_audio", True)
+        use_qwen = init_msg.get("use_qwen", True)  # Default to Qwen3-TTS
+        use_optimized_bs = init_msg.get("use_optimized_bs", True)
+        
+        if not session_id or not question:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "session_id and question are required",
+            })
+            await websocket.close()
+            return
+        
+        chain = conversations.get(session_id)
+        if not chain:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": "Session not found. Call /process first.",
+            })
+            await websocket.close()
+            return
+        
+        # Create workers based on configuration
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[{datetime.now()}] Using Qwen3-TTS worker")
+        tts_worker = QwenTTSWorker(device=device_str, use_qwen3=True)
+        
+        if use_optimized_bs:
+            print(f"[{datetime.now()}] Using optimized blendshape worker")
+            bs_worker = OptimizedBlendshapeWorker(blendshape_model, device, config)
+        else:
+            print(f"[{datetime.now()}] Using standard blendshape worker")
+            bs_worker = BlendshapeWorker(blendshape_model, device, config)
+        
+        # Create Kyutai coordinator
+        coordinator = KyutaiStreamCoordinator(
+            websocket=websocket,
+            tts_worker=tts_worker,
+            blendshape_worker=bs_worker,
+            config=config,
+        )
+        
+        await coordinator.run_streaming_pipeline(
+            rag_chain=chain,
+            question=question,
+            voice_preset=voice_preset,
+            return_audio=return_audio,
+        )
+        
+        # Print performance summary
+        monitor.print_summary()
+    
+    except WebSocketDisconnect:
+        print(f"[{datetime.now()}] WebSocket client disconnected")
+    except Exception as e:
+        print(f"[{datetime.now()}] WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "status",
+                "status": "error",
+                "message": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.get("/performance/summary")
+async def get_performance_summary():
+    """Get current performance metrics."""
+    monitor = get_monitor()
+    return monitor.get_summary()
