@@ -49,7 +49,7 @@ class QwenTTSWorker:
             
             from qwen_tts import Qwen3TTSModel
             
-            model_name = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+            model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
             
             self.model = Qwen3TTSModel.from_pretrained(
                 model_name,
@@ -60,7 +60,7 @@ class QwenTTSWorker:
             
             self.sr = 12000  # Qwen3-TTS uses 12kHz
             self.model_loaded = True
-            print(f"[{datetime.now()}] [Qwen TTS] Qwen3-TTS loaded successfully on {self.device}")
+            print(f"[{datetime.now()}] [Qwen TTS] Qwen3-TTS CustomVoice (1.7B) loaded successfully on {self.device}")
             
         except Exception as e:
             print(f"[{datetime.now()}] [Qwen TTS] Failed to load model: {e}")
@@ -114,52 +114,24 @@ class QwenTTSWorker:
                 return self._fallback_synthesis(text)
             
             with torch.no_grad():
-                # Create a more expressive reference audio
-                # Using varied frequencies and amplitude modulation for prosody
-                ref_sr = 24000
-                ref_duration = 3.0
-                ref_samples = int(ref_sr * ref_duration)
-                t = np.linspace(0, ref_duration, ref_samples)
+                # CustomVoice model has predefined speakers
+                # Supported: aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
                 
-                # Create expressive voice with pitch variation and prosody
-                ref_audio_np = np.zeros(ref_samples, dtype=np.float32)
+                # Map voice_preset to speaker, default to 'serena' (female, expressive)
+                speaker_map = {
+                    "female": "serena",
+                    "male": "ryan",
+                    "friendly": "vivian",
+                    "professional": "eric",
+                    "warm": "ono_anna",
+                }
+                speaker = speaker_map.get(voice_preset, "serena") if voice_preset else "serena"
                 
-                # Base frequency with pitch contour (rising and falling)
-                pitch_contour = 150 + 30 * np.sin(2 * np.pi * 0.5 * t)  # Pitch variation
-                ref_audio_np += 0.4 * np.sin(2 * np.pi * pitch_contour * t)
-                
-                # Add harmonics for richer voice
-                ref_audio_np += 0.25 * np.sin(2 * np.pi * pitch_contour * 2 * t)
-                ref_audio_np += 0.15 * np.sin(2 * np.pi * pitch_contour * 3 * t)
-                ref_audio_np += 0.08 * np.sin(2 * np.pi * pitch_contour * 4 * t)
-                
-                # Add amplitude modulation for prosody (stress patterns)
-                stress_pattern = 0.7 + 0.3 * np.sin(2 * np.pi * 2 * t)
-                ref_audio_np *= stress_pattern
-                
-                # Add natural envelope with attack and decay
-                attack = np.linspace(0, 1, int(ref_sr * 0.1))
-                decay = np.linspace(1, 0.3, int(ref_sr * 0.5))
-                sustain = np.ones(ref_samples - len(attack) - len(decay)) * 0.3
-                envelope = np.concatenate([attack, sustain, decay])
-                ref_audio_np *= envelope
-                
-                # Add slight noise for naturalness
-                noise = np.random.normal(0, 0.02, ref_samples).astype(np.float32)
-                ref_audio_np += noise
-                
-                # Normalize
-                ref_audio_np = ref_audio_np / np.max(np.abs(ref_audio_np)) * 0.8
-                
-                # More expressive reference text with emotion markers
-                ref_text = "Hello! I'm excited to help you today. How are you doing?"
-                
-                # Use Qwen3-TTS generate_voice_clone with tuple (audio, sr)
-                wavs, sr = self.model.generate_voice_clone(
+                # Use Qwen3-TTS CustomVoice generation
+                wavs, sr = self.model.generate_custom_voice(
                     text=text,
                     language="English",
-                    ref_audio=(ref_audio_np, ref_sr),
-                    ref_text=ref_text
+                    speaker=speaker
                 )
                 
                 if wavs is None or len(wavs) == 0:

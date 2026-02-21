@@ -134,10 +134,26 @@ Edit `utils/model/config.json`:
 ```
 
 ### TTS Settings
-- **Model**: Qwen3-TTS-12Hz-0.6B-Base
+- **Model**: Qwen3-TTS-12Hz-1.7B-CustomVoice
+- **Size**: 1.7 billion parameters (~3.4GB)
 - **Sample Rate**: 12kHz
-- **Voice Cloning**: 3-second reference audio
+- **Voice Options**: 9 predefined speakers
 - **Languages**: 10+ supported
+- **Quality**: Higher quality than 0.6B Base model
+
+#### Available Voices
+- **Female**: `serena` (default, expressive), `vivian` (friendly), `ono_anna` (warm), `sohee` (Asian accent)
+- **Male**: `ryan` (standard), `eric` (professional), `dylan` (casual), `aiden` (young), `uncle_fu` (older)
+
+#### Switching Voices
+```python
+# In API request
+{
+  "session_id": "...",
+  "question": "...",
+  "voice_preset": "ryan"  # Change to any speaker
+}
+```
 
 ## Project Structure
 
@@ -169,10 +185,10 @@ python download_model.py
 
 ## Performance
 
-- **Startup Time**: ~5 seconds
-- **TTS Generation**: ~5 minutes (CPU) / ~30 seconds (GPU)
+- **Startup Time**: ~10 seconds (model download on first run)
+- **TTS Generation**: ~8 minutes (CPU) / ~1 minute (GPU) - 1.7B model
 - **Blendshape Generation**: ~1 second per second of audio
-- **Memory Usage**: ~2GB (CPU) / ~4GB (GPU)
+- **Memory Usage**: ~4GB (CPU) / ~6GB (GPU)
 
 ## Improving Voice Expressiveness
 
