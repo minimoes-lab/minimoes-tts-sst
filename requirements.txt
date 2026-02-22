@@ -41,7 +41,7 @@ accelerate
 safetensors
 
 # Qwen3-TTS support (optional - will use fallback if not available)
-# qwen-tts>=0.1.0
+qwen-tts>=0.1.0
 tokenizers>=0.15.0
 
 # Performance monitoring
