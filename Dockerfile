@@ -28,7 +28,8 @@ COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir qwen-tts --no-deps
 
 # Copy the application code
 COPY . /app
