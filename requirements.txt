@@ -30,7 +30,8 @@ python-docx
 python-pptx
 PyPDF2
 
-transformers>=4.35.0
+# transformers>=4.35.0
+transformers==4.52.0
 faiss-cpu
 sentence-transformers==2.2.2
 huggingface-hub==0.25.2
