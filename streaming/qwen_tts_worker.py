@@ -30,6 +30,7 @@ class QwenTTSWorker:
     def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.model = None
+        self.tokenizer = None
         self.processor = None
         self.sr = 24000
         self._cancelled = False
@@ -39,7 +40,7 @@ class QwenTTSWorker:
         self._load_model()
     
     def _load_model(self):
-        """Load Qwen3-TTS model."""
+        """Load Qwen3-TTS model using qwen_tts library."""
         if not self.use_qwen3:
             print(f"[{datetime.now()}] [Qwen TTS] Qwen3 disabled, using fallback")
             return
@@ -49,22 +50,30 @@ class QwenTTSWorker:
             
             from qwen_tts import Qwen3TTSModel
             
+            # Use ModelScope model path
             model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
             
             self.model = Qwen3TTSModel.from_pretrained(
                 model_name,
                 device_map=self.device,
-                dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager"
+                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
+                trust_remote_code=True
             )
             
-            self.sr = 12000  # Qwen3-TTS uses 12kHz
+            # Get available speakers
+            self.speakers = self.model.get_supported_speakers()
+            self.default_speaker = self.speakers[0] if self.speakers else "aiden"
+            
+            self.sr = 24000  # Qwen3-TTS uses 24kHz
             self.model_loaded = True
-            print(f"[{datetime.now()}] [Qwen TTS] Qwen3-TTS CustomVoice (1.7B) loaded successfully on {self.device}")
+            print(f"[{datetime.now()}] [Qwen TTS] Qwen3-TTS loaded successfully on {self.device}")
+            print(f"[{datetime.now()}] [Qwen TTS] Available speakers: {self.speakers}")
             
         except Exception as e:
             print(f"[{datetime.now()}] [Qwen TTS] Failed to load model: {e}")
             print(f"[{datetime.now()}] [Qwen TTS] Using fallback synthesis")
+            import traceback
+            traceback.print_exc()
             self.model = None
             self.model_loaded = False
             self.sr = 24000  # Fallback uses 24kHz
@@ -114,31 +123,32 @@ class QwenTTSWorker:
                 return self._fallback_synthesis(text)
             
             with torch.no_grad():
-                # CustomVoice model has predefined speakers
-                # Supported: aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
-                
-                # Map voice_preset to speaker, default to 'serena' (female, expressive)
-                speaker_map = {
-                    "female": "serena",
-                    "male": "ryan",
-                    "friendly": "vivian",
-                    "professional": "eric",
-                    "warm": "ono_anna",
-                }
-                speaker = speaker_map.get(voice_preset, "serena") if voice_preset else "serena"
-                
-                # Use Qwen3-TTS CustomVoice generation
-                wavs, sr = self.model.generate_custom_voice(
+                # Use Qwen3-TTS generate_custom_voice method
+                # Returns (audio_list, sample_rate)
+                speaker = voice_preset if voice_preset else self.default_speaker
+                audio_tuple = self.model.generate_custom_voice(
                     text=text,
                     language="English",
                     speaker=speaker
                 )
                 
-                if wavs is None or len(wavs) == 0:
+                if audio_tuple is None or len(audio_tuple) < 2:
                     return self._fallback_synthesis(text)
                 
-                # Get first audio output
-                audio_np = wavs[0]
+                audio_list, sr = audio_tuple
+                
+                if not audio_list or len(audio_list) == 0:
+                    return self._fallback_synthesis(text)
+                
+                # Get first audio from list
+                audio_np = audio_list[0]
+                
+                # Convert to numpy if it's a tensor
+                if isinstance(audio_np, torch.Tensor):
+                    audio_np = audio_np.cpu().numpy()
+                
+                # Ensure it's float32
+                audio_np = audio_np.astype(np.float32)
                 
                 # Normalize and convert to WAV
                 audio_np = self._normalize_audio(audio_np)
@@ -152,7 +162,7 @@ class QwenTTSWorker:
                 end = time.time()
                 print(
                     f"[{datetime.now()}] [Qwen TTS] Generated in "
-                    f"{end - start:.2f}s, {len(audio_np)} samples"
+                    f"{end - start:.2f}s, {len(audio_np)} samples at {sr}Hz"
                 )
                 
                 return audio_np, wav_bytes

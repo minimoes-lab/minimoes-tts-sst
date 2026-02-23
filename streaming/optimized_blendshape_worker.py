@@ -9,7 +9,7 @@ from typing import Optional, List
 import numpy as np
 import torch
 
-from streaming.tts_worker import AudioChunk
+from streaming.qwen_tts_worker import AudioChunk
 
 BLEND_FRAMES = 8
 

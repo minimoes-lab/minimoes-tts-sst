@@ -9,6 +9,8 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+*.so
+*.egg-info
 .pytest_cache
 .mypy_cache
 
@@ -16,7 +18,6 @@ __pycache__
 venv
 env
 ENV
-.venv
 
 # IDE
 .vscode
@@ -29,11 +30,20 @@ ENV
 .DS_Store
 Thumbs.db
 
-# Environment files
+# Project specific
 .env
-.env.local
+.cache
+data
+generated_audio/*.wav
+demo_outputs/*.wav
+demo_outputs/*.json
+demo_outputs/*.csv
+test_audio.wav
+modelscope_cache
 
-# Temp/generated
-temp_*/
-reference_audio/
-.cache/
+# Old code (don't include in Docker)
+old code
+ernes.zip
+
+# Keep demo scripts and documentation
+# (they're needed for the video demo)

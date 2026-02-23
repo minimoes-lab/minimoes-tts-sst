@@ -448,7 +448,7 @@ class KyutaiStreamCoordinator:
     
     async def _generate_silence_chunk(self, sentence_idx: int):
         """Generate a silent audio chunk as fallback."""
-        from streaming.tts_worker import AudioChunk
+        from streaming.qwen_tts_worker import AudioChunk
         
         duration = 0.5  # 500ms silence
         samples = int(duration * (self.tts.sr or 24000))

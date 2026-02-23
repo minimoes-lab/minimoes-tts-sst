@@ -1,292 +1,104 @@
-# Streaming Avatar API with Qwen3-TTS
+# AI Avatar RAG + TTS + Blendshapes API
 
-A high-performance FastAPI server for generating realistic avatar animations with synchronized speech and facial blendshapes using Qwen3-TTS and RAG (Retrieval-Augmented Generation).
+Real-time AI avatar API that combines RAG (Retrieval-Augmented Generation), Qwen3-TTS, and facial blendshapes generation.
 
 ## Features
 
-- 🎙️ **Qwen3-TTS Integration**: Voice cloning with natural prosody
-- 🎭 **52 ARKit Blendshapes**: Real-time facial animation generation
-- 🔄 **WebSocket Streaming**: Low-latency audio and blendshape streaming
-- 📚 **RAG Pipeline**: Context-aware responses using Groq LLM
-- 🐳 **Docker Ready**: Easy deployment with Docker
-- ⚡ **Optimized Performance**: CPU and CUDA support
-
-## Architecture
-
-```
-User Query → RAG (Groq LLM) → Answer Text
-                                    ↓
-                            Qwen3-TTS (Voice Cloning)
-                                    ↓
-                              Audio (12kHz WAV)
-                                    ↓
-                          Blendshape Model (Transformer)
-                                    ↓
-                        52 ARKit Facial Blendshapes
-```
+- **RAG Pipeline**: Process documents/websites and answer questions using Groq's Llama 4
+- **Text-to-Speech**: Qwen3-TTS with 9 voice speakers
+- **Facial Animation**: Generate 68 ARKit-compatible facial blendshapes from audio
+- **Streaming Support**: Real-time WebSocket streaming
 
 ## Quick Start
 
-### Prerequisites
+### Using Docker (Recommended)
 
-- Docker and Docker Compose
-- GROQ API Key (for LLM)
-- 4GB+ RAM
-- (Optional) NVIDIA GPU for faster inference
-
-### Installation
-
-1. Clone the repository:
 ```bash
-git clone <your-repo-url>
-cd fastapi-main
+# Set your Groq API key
+echo "GROQ_API_KEY=your_key_here" > .env
+
+# Start the API
+docker-compose up --build
+
+# API will be available at http://localhost:7860
 ```
 
-2. Set up environment variables:
+### Test the API
+
 ```bash
-# Create .env file
-echo "GROQ_API_KEY=your_groq_api_key_here" > .env
+python test_infer.py
 ```
 
-3. Build and run with Docker:
-```bash
-# Linux/Mac
-./docker-run.sh
-
-# Windows
-docker-run.bat
-```
-
-4. Access the API:
-```
-http://localhost:7860
-```
+This will:
+1. Fetch content from Wikipedia about AI
+2. Generate an answer using RAG
+3. Convert the answer to speech using Qwen3-TTS
+4. Generate facial blendshapes for avatar animation
+5. Save `output_audio.wav` and `output_blendshapes.csv`
 
 ## API Endpoints
 
-### Health Check
-```bash
-GET /health
-```
+### `/infer` - Complete Pipeline
+POST request with:
+- `question`: Your question
+- `url`: URL to scrape for context (or upload files)
+- `return_audio`: Get audio as base64
+- `return_csv`: Get blendshapes as CSV
 
-### Process Content
-```bash
-POST /process
-Content-Type: multipart/form-data
+Returns:
+- `answer`: RAG-generated answer
+- `audio_base64`: Speech audio (24kHz WAV)
+- `blendshapes`: 68 facial animation frames at 60fps
+- `csv`: Optional CSV export
 
-{
-  "url": "https://example.com/article"
-}
-```
+### `/health` - Health Check
+GET request to check if API is running.
 
-### Query with TTS
-```bash
-POST /query
-Content-Type: application/json
+## Available Voice Speakers
 
-{
-  "session_id": "uuid",
-  "question": "What is this about?"
-}
-```
-
-### Audio to Blendshapes
-```bash
-POST /audio_to_blendshapes
-Content-Type: application/octet-stream
-
-<audio_bytes>
-```
-
-### WebSocket Streaming
-```javascript
-ws://localhost:7860/ws/infer/kyutai
-
-// Send
-{
-  "type": "start",
-  "session_id": "uuid",
-  "question": "Tell me more",
-  "use_qwen": true
-}
-
-// Receive
-{
-  "type": "audio_chunk",
-  "audio_base64": "...",
-  "blendshapes": {...}
-}
-```
-
-## Configuration
-
-### Blendshape Model Config
-Edit `utils/model/config.json`:
-```json
-{
-  "input_dim": 80,
-  "output_dim": 52,
-  "hidden_dim": 512,
-  "n_layers": 6,
-  "num_heads": 8,
-  "use_half_precision": false
-}
-```
-
-### TTS Settings
-- **Model**: Qwen3-TTS-12Hz-1.7B-CustomVoice
-- **Size**: 1.7 billion parameters (~3.4GB)
-- **Sample Rate**: 12kHz
-- **Voice Options**: 9 predefined speakers
-- **Languages**: 10+ supported
-- **Quality**: Higher quality than 0.6B Base model
-
-#### Available Voices
-- **Female**: `serena` (default, expressive), `vivian` (friendly), `ono_anna` (warm), `sohee` (Asian accent)
-- **Male**: `ryan` (standard), `eric` (professional), `dylan` (casual), `aiden` (young), `uncle_fu` (older)
-
-#### Switching Voices
-```python
-# In API request
-{
-  "session_id": "...",
-  "question": "...",
-  "voice_preset": "ryan"  # Change to any speaker
-}
-```
+- aiden
+- dylan
+- eric
+- ono_anna
+- ryan
+- serena
+- sohee
+- uncle_fu
+- vivian
 
 ## Project Structure
 
 ```
-.
-├── api.py                          # Main FastAPI application
-├── streaming/
-│   ├── qwen_tts_worker.py         # Qwen3-TTS integration
-│   ├── blendshape_worker.py       # Blendshape generation
-│   ├── kyutai_coordinator.py      # Streaming coordinator
-│   └── optimized_blendshape_worker.py
-├── utils/
-│   └── model/
-│       ├── model.py               # Blendshape model architecture
-│       ├── model.pth              # Trained weights (download separately)
-│       └── config.json            # Model configuration
-├── requirements.txt               # Python dependencies
-├── Dockerfile                     # Docker configuration
-└── docker-compose.yml            # Docker Compose setup
-```
-
-## Model Downloads
-
-The blendshape model is downloaded automatically on first run. If needed, download manually:
-
-```bash
-python download_model.py
+├── api.py                  # Main FastAPI application
+├── streaming/              # Streaming components
+│   ├── qwen_tts_worker.py # Qwen3-TTS integration
+│   ├── blendshape_worker.py
+│   └── kyutai_coordinator.py
+├── utils/                  # Utilities
+│   ├── config.py          # Blendshape configuration
+│   ├── generate_face_shapes.py
+│   └── model/             # Blendshape neural network
+├── test_infer.py          # Test script
+├── docker-compose.yml     # Docker configuration
+└── requirements.txt       # Python dependencies
 ```
 
 ## Performance
 
-- **Startup Time**: ~10 seconds (model download on first run)
-- **TTS Generation**: ~8 minutes (CPU) / ~1 minute (GPU) - 1.7B model
-- **Blendshape Generation**: ~1 second per second of audio
-- **Memory Usage**: ~4GB (CPU) / ~6GB (GPU)
+- **CPU**: ~13-15 minutes per TTS generation
+- **GPU**: Significantly faster (recommended for production)
 
-## Improving Voice Expressiveness
+## Tech Stack
 
-The default voice uses synthetic reference audio. For more natural speech:
-
-1. Record 3-5 seconds of expressive speech
-2. Save as WAV (24kHz recommended)
-3. Update the worker to use your recording
-
-See `IMPROVING_VOICE_EXPRESSIVENESS.md` for details.
-
-## Development
-
-### Running Tests
-```bash
-pytest
-```
-
-### Local Development
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run server
-uvicorn api:app --host 0.0.0.0 --port 7860 --reload
-```
-
-## Docker Commands
-
-```bash
-# Build image
-docker build -t streaming-avatar-api .
-
-# Run container
-docker run -p 7860:7860 --env-file .env streaming-avatar-api
-
-# View logs
-docker logs streaming-avatar-api
-
-# Restart
-docker restart streaming-avatar-api
-```
-
-## Troubleshooting
-
-### Model Not Loading
-- Check `utils/model/model.pth` exists
-- Verify file size (~600MB)
-- Run `python download_model.py`
-
-### Out of Memory
-- Reduce batch size in config
-- Use CPU instead of GPU
-- Close other applications
-
-### Slow Generation
-- Use GPU if available
-- Reduce audio length
-- Enable half-precision (GPU only)
-
-## API Documentation
-
-Interactive API docs available at:
-- Swagger UI: `http://localhost:7860/docs`
-- ReDoc: `http://localhost:7860/redoc`
-
-## Technologies
-
-- **FastAPI**: Web framework
-- **Qwen3-TTS**: Text-to-speech with voice cloning
-- **PyTorch**: Deep learning framework
-- **Transformers**: Model architecture
-- **LangChain**: RAG pipeline
-- **Groq**: LLM inference
-- **FAISS**: Vector similarity search
-- **WebSockets**: Real-time streaming
+- FastAPI + Uvicorn
+- PyTorch
+- LangChain + Groq (Llama 4)
+- Qwen3-TTS (1.7B parameters)
+- FAISS vector embeddings
+- Custom blendshape neural network
 
 ## License
 
-[Your License Here]
-
-## Contributing
-
-Contributions welcome! Please open an issue or PR.
-
-## Support
-
-For issues and questions:
-- GitHub Issues: [Your repo issues]
-- Documentation: See `/docs` folder
-
-## Acknowledgments
-
-- Qwen Team for Qwen3-TTS
-- Groq for LLM API
-- HuggingFace for model hosting
-- Community contributors
-
----
-
-**Note**: This project uses Qwen3-TTS for voice generation. Bark TTS has been completely removed.
+Dual-license:
+- MIT License for individuals and businesses earning under $1M/year
+- Commercial license required for businesses with $1M+ annual revenue

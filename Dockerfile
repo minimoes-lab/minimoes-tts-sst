@@ -33,12 +33,15 @@ RUN pip install --upgrade pip \
 # Copy the application code
 COPY . /app
 
-# Download the blendshape model from HuggingFace
-RUN echo "Downloading blendshape model..." \
-    && rm -f utils/model/model.pth \
-    && wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth \
-    && echo "Model downloaded successfully:" \
-    && ls -lh utils/model/model.pth
+# Download the blendshape model from HuggingFace (skip if already exists)
+RUN if [ ! -f utils/model/model.pth ]; then \
+        echo "Downloading blendshape model..." && \
+        wget -O utils/model/model.pth https://huggingface.co/KKKONNK/model/resolve/main/model.pth && \
+        echo "Model downloaded successfully:"; \
+    else \
+        echo "Blendshape model already exists, skipping download"; \
+    fi && \
+    ls -lh utils/model/model.pth
 
 # Create directories
 RUN mkdir -p /app/generated_audio /app/demo_outputs

@@ -14,6 +14,8 @@ services:
       # Mount for demo outputs
       - ./demo_outputs:/app/demo_outputs
       - ./generated_audio:/app/generated_audio
+      # Cache ModelScope models locally to avoid re-downloading
+      - ./modelscope_cache:/root/.cache/modelscope
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7860/health"]

@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 
-from streaming.tts_worker import AudioChunk
+from streaming.qwen_tts_worker import AudioChunk
 
 BLEND_FRAMES = 8  # frames to blend at sentence boundaries
 

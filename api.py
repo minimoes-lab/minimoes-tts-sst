@@ -36,7 +36,6 @@ from pptx import Presentation
 import zipfile
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
-# Bark removed - using Qwen3-TTS only
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
