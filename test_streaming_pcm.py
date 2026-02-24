@@ -91,6 +91,8 @@ async def main():
     chunk_ms = int(os.environ.get("CHUNK_MS", "50"))
     play_live = os.environ.get("PLAY_LIVE", "1") not in ("0", "false", "False")
     jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "3"))
+    list_devices = os.environ.get("LIST_DEVICES", "0") in ("1", "true", "True")
+    output_device = os.environ.get("OUTPUT_DEVICE")
 
     out_root = os.path.join(os.path.expanduser("~"), "Desktop", "ws_streaming_out")
     os.makedirs(out_root, exist_ok=True)
@@ -124,11 +126,22 @@ async def main():
 
     sd = None
     stream = None
+    sd_device = None
     if play_live:
         try:
             import sounddevice as _sd  # type: ignore
 
             sd = _sd
+            if list_devices:
+                try:
+                    print("=== sounddevice devices ===")
+                    print(sd.query_devices())
+                except Exception as e:
+                    print(f"WARN Failed to query devices: {e}")
+
+            if output_device is not None and str(output_device).strip() != "":
+                od = str(output_device).strip()
+                sd_device = int(od) if od.isdigit() else od
         except Exception:
             sd = None
 
@@ -174,6 +187,7 @@ async def main():
                             dtype="float32",
                             callback=_cb,
                             blocksize=0,
+                            device=sd_device,
                         )
                         stream.start()
 

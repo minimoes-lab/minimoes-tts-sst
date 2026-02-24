@@ -128,15 +128,18 @@ embeddings_model = None
 # =====================================================================================
 
 PROFESSIONAL_RAG_PROMPT_TEMPLATE = """
-You are a highly intelligent and diligent AI research assistant. Your primary goal is to provide accurate, concise, and helpful answers based *only* on the context provided.
+You are a voice-first conversational assistant. Your goal is to sound natural, warm, and human while staying strictly grounded in the provided context.
 
-**Instructions:**
-1.  **Analyze the Context:** Carefully read and understand the `context` provided below. It is your only source of truth.
-2.  **Answer the Question:** Use the context to answer the user's `question`.
-3.  **Strict Grounding:** Do not use any external knowledge. If the answer is not in the context, you MUST state: "I am sorry, but the information required to answer your question is not available in the provided documents." Do not try to guess or infer information that isn't explicitly stated.
-4.  **Synthesize Information:** If the question requires combining information from multiple parts of the context, synthesize a coherent answer.
-5.  **Clarity and Conciseness:** Provide a clear and direct answer. If appropriate, use bullet points to structure complex information.
-6.  **Cite Sources (if applicable):** While not strictly required, if you can identify the source of a piece of information within the context, it's good practice to mention it.
+**Hard rules (must follow):**
+1. **Strict grounding:** Use ONLY the provided context and chat history. If the answer is not in the context, you MUST say exactly: "I am sorry, but the information required to answer your question is not available in the provided documents." Do not guess.
+2. **Spoken style (TTS-friendly):** Write for speech, not for reading.
+   - Use short sentences.
+   - Avoid long paragraphs, markdown, and long lists.
+   - Prefer simple punctuation to create rhythm (commas, periods, occasional "...").
+3. **Brevity:** Default to 1-3 short sentences total.
+4. **Emotional attunement:** If the user expresses emotion (stress, frustration, sadness, excitement), acknowledge it briefly in a calm, supportive way.
+5. **Keep the conversation moving:** End with ONE short follow-up question to clarify or advance the dialogue.
+6. **Language:** Reply in the same language as the user's question.
 
 **Context:**
 {context}
@@ -435,7 +438,7 @@ async def process_content(
         print(f"[{datetime.now()}] /process endpoint finished in {process_end_time - process_start_time:.2f} seconds.")
         return ProcessResponse(
             session_id=session_id,
-            message="Content processed successfully. You can now use the /query endpoint.",
+            message="Content processed successfully.",
             filenames=processed_files,
             processed_url=url
         )
@@ -445,57 +448,6 @@ async def process_content(
     finally:
         print(f"[{datetime.now()}] Cleaning up temporary directory: {temp_dir}")
         shutil.rmtree(temp_dir)
-
-@app.post("/query", response_model=QueryResponse)
-async def query_session(request: QueryRequest, background_tasks: BackgroundTasks):
-    """
-    Ask a question within an existing session.
-    This endpoint uses the session's context to generate an answer and optionally creates a TTS audio file.
-    """
-    print(f"[{datetime.now()}] /query endpoint called for session: {request.session_id}")
-    query_start_time = time.time()
-
-    chain = conversations.get(request.session_id)
-    if not chain:
-        print(f"[{datetime.now()}] ERROR: Session {request.session_id} not found.")
-        raise HTTPException(status_code=404, detail="Session not found. Please process content first.")
-
-    try:
-        print(f"[{datetime.now()}] Invoking RAG chain for question: '{request.question[:50]}...'")
-        rag_invoke_start_time = time.time()
-        result = chain.invoke({"question": request.question})
-        rag_invoke_end_time = time.time()
-        print(f"[{datetime.now()}] RAG chain invoked in {rag_invoke_end_time - rag_invoke_start_time:.2f} seconds.")
-        
-        answer = result.get("answer", "No answer could be generated.")
-        print(f"[{datetime.now()}] RAG Answer generated. Length: {len(answer)} chars.")
-
-        # --- FIX: Manually convert LangChain documents to Pydantic models ---
-        source_docs_result = result.get("source_documents", [])
-        validated_sources = [
-            SourceDocument(page_content=doc.page_content, metadata=doc.metadata)
-            for doc in source_docs_result
-        ]
-        # --- END FIX ---
-
-        audio_base64_content = None
-        print(f"[{datetime.now()}] Generating audio with Qwen3-TTS...")
-        audio_base64_content = generate_speech_content_base64(text=answer, voice_preset=request.voice_preset)
-        if audio_base64_content:
-            print(f"[{datetime.now()}] Base64 audio generated and ready for response.")
-        else:
-            print(f"[{datetime.now()}] Failed to generate Base64 audio content.")
-
-        query_end_time = time.time()
-        print(f"[{datetime.now()}] /query endpoint finished in {query_end_time - query_start_time:.2f} seconds.")
-        return QueryResponse(
-            answer=answer,
-            source_documents=validated_sources, # Use the validated list here
-            audio_base64=audio_base64_content # Changed from audio_url
-        )
-    except Exception as e:
-        print(f"[{datetime.now()}] ERROR in /query endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred during the query: {e}")
 
 
 
@@ -527,117 +479,6 @@ import json
 
 
 import json
-
-@app.post("/infer", response_model=InferResponse)
-async def infer(
-    request_raw: str = Form(..., description="JSON string with inference parameters"),
-    files: Optional[List[UploadFile]] = File(None),
-    url: Optional[str] = Form(None)
-):
-    # ---------------------------------------------
-    # 0. Parse request JSON
-    # ---------------------------------------------
-    try:
-        req = InferRequest(**json.loads(request_raw))
-    except Exception as e:
-        raise HTTPException(400, f"Invalid request JSON: {e}")
-
-    # Validate source
-    if not files and not url:
-        raise HTTPException(
-            status_code=400,
-            detail="Either files or url must be provided"
-        )
-
-    start = time.time()
-
-    # ---------------------------------------------
-    # 1. Extract text
-    # ---------------------------------------------
-    extractor = ContentExtractor()
-    raw_text = ""
-
-    if url:
-        raw_text += extractor.from_url(url)
-        print(f"[INFER] Extracted text from URL: {url}")
-
-    if files:
-        temp_dir = tempfile.mkdtemp()
-        try:
-            for f in files:
-                path = os.path.join(temp_dir, f.filename)
-                with open(path, "wb") as buf:
-                    shutil.copyfileobj(f.file, buf)
-                raw_text += extractor.from_file_path(path)
-        finally:
-            shutil.rmtree(temp_dir)
-
-    if not raw_text.strip():
-        raise HTTPException(400, "No content to process")
-
-    # ---------------------------------------------
-    # 2. RAG
-    # ---------------------------------------------
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=200
-    )
-    chunks = splitter.split_text(raw_text)
-
-    rag_chain = get_rag_chain(chunks)
-    result = rag_chain.invoke({"question": req.question})
-    answer = result["answer"]
-
-    # ---------------------------------------------
-    # 3. Text → Audio
-    # ---------------------------------------------
-    audio_base64 = None
-    audio_base64 = generate_speech_content_base64(
-        answer,
-        voice_preset=req.voice_preset
-    )
-
-    # ---------------------------------------------
-    # 4. Audio → Blendshapes
-    # ---------------------------------------------
-    blendshapes_raw = []
-    if audio_base64:
-        audio_bytes = base64.b64decode(audio_base64)
-        facial_data = generate_facial_data_from_bytes(
-            audio_bytes,
-            blendshape_model,
-            device,
-            config
-        )
-        blendshapes_raw = facial_data.tolist()
-
-    named_frames = blendshapes_to_named_frames(blendshapes_raw)
-
-    # ---------------------------------------------
-    # 5. Optional CSV (with header row)
-    # ---------------------------------------------
-    csv_data = None
-    if req.return_csv and blendshapes_raw:
-        import csv as csv_mod, io as io_mod
-        output = io_mod.StringIO()
-        writer = csv_mod.writer(output)
-        header = ["timestamp", "frame_index"] + get_blendshape_names()
-        writer.writerow(header)
-        frame_rate = config['frame_rate']
-        for idx, row in enumerate(blendshapes_raw):
-            writer.writerow([round(idx / frame_rate, 6), idx] + [round(float(v), 6) for v in row])
-        csv_data = output.getvalue()
-
-    print(f"[INFER] Done in {time.time() - start:.2f}s")
-
-    return InferResponse(
-        answer=answer,
-        blendshapes=named_frames,
-        mapping=get_blendshape_names(),
-        frame_rate=config['frame_rate'],
-        audio_base64=audio_base64 if req.return_audio else None,
-        csv=csv_data
-    )
 
 
 # =====================================================================================
