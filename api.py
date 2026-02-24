@@ -53,6 +53,8 @@ from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
 from utils.config import config, get_blendshape_names, blendshapes_to_named_frames
 import multiprocessing
+
+from streaming.qwen_tts_worker import QwenTTSWorker
 app = FastAPI(
     title="Intelligent Document & Web API",
     description="A high-quality API for querying documents and websites using a RAG pipeline with Groq, and generating speech with Qwen3-TTS.",
@@ -80,6 +82,21 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+_tts_worker_for_speakers: Optional[QwenTTSWorker] = None
+
+
+@app.get("/tts/speakers")
+def get_tts_speakers():
+    global _tts_worker_for_speakers
+    if _tts_worker_for_speakers is None:
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        _tts_worker_for_speakers = QwenTTSWorker(device=device_str, use_qwen3=True)
+
+    speakers = getattr(_tts_worker_for_speakers, "speakers", None) or []
+    default_speaker = getattr(_tts_worker_for_speakers, "default_speaker", None)
+    return {"speakers": speakers, "default_speaker": default_speaker}
 print(f"--- ATTEMPTING TO LOAD: {model_path} ---")
 blendshape_model = load_model(model_path, config, device)
 print(f"DEBUG: Absolute path is: {model_path}")
