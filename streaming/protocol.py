@@ -10,9 +10,12 @@ def make_audio_chunk_msg(
     start_time: float,
     end_time: float,
     sample_rate: int,
+    audio_format: str = "pcm_s16le",
+    channels: int = 1,
+    audio_bytes_base64: Optional[str] = None,
     is_final: bool = False,
 ) -> dict:
-    return {
+    msg = {
         "type": "audio_chunk",
         "chunk_index": chunk_index,
         "sentence_index": sentence_index,
@@ -20,8 +23,15 @@ def make_audio_chunk_msg(
         "start_time": round(start_time, 4),
         "end_time": round(end_time, 4),
         "sample_rate": sample_rate,
+        "audio_format": audio_format,
+        "channels": channels,
         "is_final": is_final,
     }
+
+    if audio_bytes_base64 is not None:
+        msg["audio_bytes_base64"] = audio_bytes_base64
+
+    return msg
 
 
 def _raw_frames_to_named(

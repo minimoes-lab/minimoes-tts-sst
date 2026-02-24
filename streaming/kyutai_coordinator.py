@@ -73,7 +73,7 @@ class KyutaiStreamCoordinator:
         self.config = config
         
         # Sentence buffering
-        self.sentence_buffer = SentenceBuffer(min_chars=20, max_chars=200)
+        self.sentence_buffer = SentenceBuffer(min_chars=12, max_chars=160)
         
         # Delayed streams for synchronization
         self.audio_stream = DelayedStream(delay_frames=0)
@@ -99,6 +99,9 @@ class KyutaiStreamCoordinator:
         self._error_count = 0
         self._max_errors = 3
         self._last_successful_frame = None
+
+        # Real-time audio streaming (PCM16)
+        self._chunk_ms: int = 50
     
     async def run_streaming_pipeline(
         self,
@@ -106,11 +109,15 @@ class KyutaiStreamCoordinator:
         question: str,
         voice_preset: Optional[str] = None,
         return_audio: bool = True,
+        chunk_ms: Optional[int] = None,
     ):
         """Run the full streaming pipeline with Kyutai optimizations."""
         self._cancelled = False
         self.tts.reset()
         self.bs.reset()
+
+        if isinstance(chunk_ms, int) and chunk_ms > 0:
+            self._chunk_ms = chunk_ms
         
         await self._send_status("processing", "Starting Kyutai-optimized pipeline")
         
@@ -233,7 +240,8 @@ class KyutaiStreamCoordinator:
     
     async def _blendshape_stage(self, return_audio: bool):
         """Stage 3: Blendshape generation with delayed stream sync."""
-        chunk_idx = 0
+        audio_chunk_idx = 0
+        bs_chunk_idx = 0
         
         try:
             while True:
@@ -246,18 +254,7 @@ class KyutaiStreamCoordinator:
                 
                 # Send audio immediately (no delay)
                 if return_audio:
-                    audio_b64 = base64.b64encode(audio_chunk.audio_bytes).decode("utf-8")
-                    await self.ws.send_json(
-                        make_audio_chunk_msg(
-                            chunk_index=chunk_idx,
-                            sentence_index=audio_chunk.sentence_index,
-                            audio_base64=audio_b64,
-                            start_time=audio_chunk.start_time,
-                            end_time=audio_chunk.start_time + audio_chunk.duration,
-                            sample_rate=audio_chunk.sample_rate,
-                            is_final=False,
-                        )
-                    )
+                    audio_chunk_idx = await self._send_audio_pcm16(audio_chunk_idx, audio_chunk)
                 
                 # Generate blendshapes with error handling
                 try:
@@ -276,7 +273,7 @@ class KyutaiStreamCoordinator:
                         if ready_chunk:
                             await self.ws.send_json(
                                 make_blendshapes_msg(
-                                    chunk_index=chunk_idx,
+                                    chunk_index=bs_chunk_idx,
                                     sentence_index=ready_chunk.sentence_index,
                                     frames=ready_chunk.frames.tolist(),
                                     start_time=ready_chunk.start_time,
@@ -289,16 +286,16 @@ class KyutaiStreamCoordinator:
                 except Exception as e:
                     print(f"[{datetime.now()}] [Kyutai BS] Error: {e}")
                     # Use last successful frame as fallback
-                    await self._send_fallback_frames(chunk_idx, audio_chunk)
+                    await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
                 
-                chunk_idx += 1
+                bs_chunk_idx += 1
             
             # Flush delayed visual stream
             remaining = self.visual_stream.flush()
             for bs_chunk in remaining:
                 await self.ws.send_json(
                     make_blendshapes_msg(
-                        chunk_index=chunk_idx,
+                        chunk_index=bs_chunk_idx,
                         sentence_index=bs_chunk.sentence_index,
                         frames=bs_chunk.frames.tolist(),
                         start_time=bs_chunk.start_time,
@@ -307,24 +304,26 @@ class KyutaiStreamCoordinator:
                         is_final=False,
                     )
                 )
-                chunk_idx += 1
+                bs_chunk_idx += 1
             
             # Send final markers
             if not self._cancelled:
                 await self.ws.send_json(
                     make_audio_chunk_msg(
-                        chunk_index=chunk_idx,
+                        chunk_index=audio_chunk_idx,
                         sentence_index=max(0, self._sentence_index - 1),
                         audio_base64="",
                         start_time=self._cumulative_audio_time,
                         end_time=self._cumulative_audio_time,
                         sample_rate=self.tts.sr or 24000,
+                        audio_format="pcm_s16le",
+                        channels=1,
                         is_final=True,
                     )
                 )
                 await self.ws.send_json(
                     make_blendshapes_msg(
-                        chunk_index=chunk_idx,
+                        chunk_index=bs_chunk_idx,
                         sentence_index=max(0, self._sentence_index - 1),
                         frames=[],
                         start_time=self._cumulative_audio_time,
@@ -337,6 +336,51 @@ class KyutaiStreamCoordinator:
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai BS] ERROR: {repr(e)}")
             await self._handle_error("blendshape", e)
+
+    async def _send_audio_pcm16(self, chunk_idx: int, audio_chunk) -> int:
+        """Emit PCM16 little-endian chunks over WS for real-time playback."""
+        sr = int(audio_chunk.sample_rate or (self.tts.sr or 24000))
+        audio_np = audio_chunk.audio_np
+        if audio_np is None:
+            return chunk_idx
+
+        if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
+            audio_np = audio_np[:, 0]
+
+        audio_np = audio_np.astype(np.float32, copy=False)
+        audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+        samples_per = max(1, int(sr * (self._chunk_ms / 1000.0)))
+        total_samples = int(audio_int16.shape[0])
+
+        sample_cursor = 0
+        while sample_cursor < total_samples and not self._cancelled:
+            end = min(total_samples, sample_cursor + samples_per)
+            seg_bytes = audio_int16[sample_cursor:end].tobytes(order="C")
+            seg_b64 = base64.b64encode(seg_bytes).decode("utf-8")
+
+            seg_start_time = audio_chunk.start_time + (sample_cursor / sr)
+            seg_end_time = audio_chunk.start_time + (end / sr)
+
+            await self.ws.send_json(
+                make_audio_chunk_msg(
+                    chunk_index=chunk_idx,
+                    sentence_index=audio_chunk.sentence_index,
+                    audio_base64="",
+                    audio_bytes_base64=seg_b64,
+                    start_time=seg_start_time,
+                    end_time=seg_end_time,
+                    sample_rate=sr,
+                    audio_format="pcm_s16le",
+                    channels=1,
+                    is_final=False,
+                )
+            )
+
+            chunk_idx += 1
+            sample_cursor = end
+
+        return chunk_idx
     
     async def _monitor_buffer_health(self):
         """Monitor and adapt buffer sizes based on queue health."""

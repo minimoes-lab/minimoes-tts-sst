@@ -652,105 +652,13 @@ from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
 from streaming.performance_monitor import get_monitor
 
 
-@app.websocket("/ws/infer")
-async def websocket_infer(websocket: WebSocket):
-    """
-    Real-time streaming inference over WebSocket (original implementation).
-
-    Client flow:
-      1. Connect to ws://.../ws/infer
-      2. Send: {"type": "start", "session_id": "...", "question": "..."}
-      3. Receive progressive: text_chunk, audio_chunk, blendshapes, status
-      4. Optionally send: {"type": "interrupt"} to stop mid-generation
-    """
-    await websocket.accept()
-
-    try:
-        # Wait for the initial "start" message
-        init_msg = await websocket.receive_json()
-
-        if init_msg.get("type") != "start":
-            await websocket.send_json({
-                "type": "status",
-                "status": "error",
-                "message": "First message must be type 'start'",
-            })
-            await websocket.close()
-            return
-
-        session_id = init_msg.get("session_id")
-        question = init_msg.get("question")
-        voice_preset = init_msg.get("voice_preset")
-        return_audio = init_msg.get("return_audio", True)
-
-        if not session_id or not question:
-            await websocket.send_json({
-                "type": "status",
-                "status": "error",
-                "message": "session_id and question are required",
-            })
-            await websocket.close()
-            return
-
-        # Get the RAG chain for this session
-        chain = conversations.get(session_id)
-        if not chain:
-            await websocket.send_json({
-                "type": "status",
-                "status": "error",
-                "message": "Session not found. Call /process first.",
-            })
-            await websocket.close()
-            return
-
-        # Create workers with Qwen3-TTS
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        from streaming.qwen_tts_worker import QwenTTSWorker
-        from streaming.blendshape_worker import BlendshapeWorker
-        
-        tts_worker = QwenTTSWorker(device=device_str, use_qwen3=True)
-        bs_worker = BlendshapeWorker(blendshape_model, device, config)
-
-        # Create and run coordinator
-        from streaming.kyutai_coordinator import KyutaiStreamCoordinator
-        coordinator = KyutaiStreamCoordinator(
-            websocket=websocket,
-            tts_worker=tts_worker,
-            blendshape_worker=bs_worker,
-        )
-
-        await coordinator.run_streaming_pipeline(
-            rag_chain=chain,
-            question=question,
-            voice_preset=voice_preset,
-            return_audio=return_audio,
-        )
-
-    except WebSocketDisconnect:
-        print(f"[{datetime.now()}] WebSocket client disconnected")
-    except Exception as e:
-        print(f"[{datetime.now()}] WebSocket error: {e}")
-        try:
-            await websocket.send_json({
-                "type": "status",
-                "status": "error",
-                "message": str(e),
-            })
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-
-
 @app.websocket("/ws/infer/kyutai")
 async def websocket_infer_kyutai(websocket: WebSocket):
     """
-    Enhanced streaming inference using Kyutai delayed streams approach.
+    Real-time streaming inference with PCM16 audio chunks.
     
     Features:
+    - Real-time PCM16 audio streaming (configurable chunk_ms, default 50ms)
     - Joint audio-visual modeling with controlled delay
     - Adaptive buffering based on network conditions
     - Better synchronization between modalities
@@ -759,10 +667,16 @@ async def websocket_infer_kyutai(websocket: WebSocket):
     
     Client flow:
       1. Connect to ws://.../ws/infer/kyutai
-      2. Send: {"type": "start", "session_id": "...", "question": "...", "use_qwen": true}
-      3. Receive progressive: text_chunk, audio_chunk, blendshapes, status
+      2. Send: {"type": "start", "session_id": "...", "question": "...", "chunk_ms": 50}
+      3. Receive progressive: text_chunk, audio_chunk (PCM16), blendshapes, status
       4. Send: {"type": "interrupt"} to stop
       5. Send: {"type": "buffer_adjust", "target_size": 3} to adjust buffering
+    
+    Audio format:
+      - audio_chunk messages contain "audio_bytes_base64" (PCM16 little-endian)
+      - "audio_format": "pcm_s16le", "channels": 1, "sample_rate": 24000
+      - Client assembles PCM chunks into final WAV file
+      - Use test_streaming_pcm.py as reference client
     """
     await websocket.accept()
     monitor = get_monitor()
@@ -786,6 +700,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         return_audio = init_msg.get("return_audio", True)
         use_qwen = init_msg.get("use_qwen", True)  # Default to Qwen3-TTS
         use_optimized_bs = init_msg.get("use_optimized_bs", True)
+        chunk_ms = init_msg.get("chunk_ms")
         
         if not session_id or not question:
             await websocket.send_json({
@@ -831,6 +746,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             question=question,
             voice_preset=voice_preset,
             return_audio=return_audio,
+            chunk_ms=chunk_ms,
         )
         
         # Print performance summary
