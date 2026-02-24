@@ -5,6 +5,7 @@ Reference: https://github.com/QwenLM/Qwen3-TTS
 import asyncio
 import io
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Tuple
@@ -26,6 +27,13 @@ class AudioChunk:
 
 class QwenTTSWorker:
     """Streaming TTS worker using Qwen3-TTS for lower latency."""
+
+    _shared_lock = threading.Lock()
+    _shared_model = None
+    _shared_speakers = None
+    _shared_default_speaker = None
+    _shared_loaded_device = None
+    _shared_model_loaded = False
     
     def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None):
         self.device = device if torch.cuda.is_available() else "cpu"
@@ -46,6 +54,23 @@ class QwenTTSWorker:
             return
             
         try:
+            with self.__class__._shared_lock:
+                if (
+                    self.__class__._shared_model_loaded
+                    and self.__class__._shared_model is not None
+                    and self.__class__._shared_loaded_device == self.device
+                ):
+                    self.model = self.__class__._shared_model
+                    self.speakers = self.__class__._shared_speakers or []
+                    self.default_speaker = (
+                        self.__class__._shared_default_speaker
+                        if self.__class__._shared_default_speaker
+                        else (self.speakers[0] if self.speakers else "aiden")
+                    )
+                    self.model_loaded = True
+                    self.sr = 24000
+                    return
+
             print(f"[{datetime.now()}] [Qwen TTS] Loading Qwen3-TTS model...")
             
             from qwen_tts import Qwen3TTSModel
@@ -66,6 +91,14 @@ class QwenTTSWorker:
             
             self.sr = 24000  # Qwen3-TTS uses 24kHz
             self.model_loaded = True
+
+            with self.__class__._shared_lock:
+                self.__class__._shared_model = self.model
+                self.__class__._shared_speakers = self.speakers
+                self.__class__._shared_default_speaker = self.default_speaker
+                self.__class__._shared_loaded_device = self.device
+                self.__class__._shared_model_loaded = True
+
             print(f"[{datetime.now()}] [Qwen TTS] Qwen3-TTS loaded successfully on {self.device}")
             print(f"[{datetime.now()}] [Qwen TTS] Available speakers: {self.speakers}")
             
