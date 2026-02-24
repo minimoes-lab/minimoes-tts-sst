@@ -88,6 +88,7 @@ async def main():
     pod_url = os.environ.get("POD_URL", "http://127.0.0.1:7860").rstrip("/")
     test_url = os.environ.get("TEST_URL", "http://httpbin.org/html")
     question = os.environ.get("QUESTION", "Hello how are you?")
+    tts_instruct = os.environ.get("TTS_INSTRUCT", "").strip() or None
     chunk_ms = int(os.environ.get("CHUNK_MS", "50"))
     play_live = os.environ.get("PLAY_LIVE", "1") not in ("0", "false", "False")
     jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "3"))
@@ -157,6 +158,7 @@ async def main():
                     "question": question,
                     "return_audio": True,
                     "chunk_ms": chunk_ms,
+                    "tts_instruct": tts_instruct,
                 }
             )
         )

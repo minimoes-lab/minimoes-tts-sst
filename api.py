@@ -508,7 +508,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
     
     Client flow:
       1. Connect to ws://.../ws/infer/kyutai
-      2. Send: {"type": "start", "session_id": "...", "question": "...", "chunk_ms": 50}
+      2. Send: {"type": "start", "session_id": "...", "question": "...", "chunk_ms": 50, "tts_instruct": "warm, gentle, soothing tone"}
       3. Receive progressive: text_chunk, audio_chunk (PCM16), blendshapes, status
       4. Send: {"type": "interrupt"} to stop
       5. Send: {"type": "buffer_adjust", "target_size": 3} to adjust buffering
@@ -538,6 +538,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         session_id = init_msg.get("session_id")
         question = init_msg.get("question")
         voice_preset = init_msg.get("voice_preset")
+        tts_instruct = init_msg.get("tts_instruct")
         return_audio = init_msg.get("return_audio", True)
         use_qwen = init_msg.get("use_qwen", True)  # Default to Qwen3-TTS
         use_optimized_bs = init_msg.get("use_optimized_bs", True)
@@ -586,6 +587,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             rag_chain=chain,
             question=question,
             voice_preset=voice_preset,
+            tts_instruct=tts_instruct,
             return_audio=return_audio,
             chunk_ms=chunk_ms,
         )

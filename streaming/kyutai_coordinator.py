@@ -108,6 +108,7 @@ class KyutaiStreamCoordinator:
         rag_chain,
         question: str,
         voice_preset: Optional[str] = None,
+        tts_instruct: Optional[str] = None,
         return_audio: bool = True,
         chunk_ms: Optional[int] = None,
     ):
@@ -123,7 +124,7 @@ class KyutaiStreamCoordinator:
         
         # Create concurrent tasks
         llm_task = asyncio.create_task(self._llm_stage(rag_chain, question))
-        tts_task = asyncio.create_task(self._tts_stage(voice_preset))
+        tts_task = asyncio.create_task(self._tts_stage(voice_preset, tts_instruct))
         blendshape_task = asyncio.create_task(self._blendshape_stage(return_audio))
         interrupt_task = asyncio.create_task(self._listen_for_interrupts())
         monitor_task = asyncio.create_task(self._monitor_buffer_health())
@@ -188,7 +189,7 @@ class KyutaiStreamCoordinator:
         finally:
             await self._sentence_queue.put(None)
     
-    async def _tts_stage(self, voice_preset: Optional[str]):
+    async def _tts_stage(self, voice_preset: Optional[str], tts_instruct: Optional[str]):
         """Stage 2: TTS with error recovery."""
         sentence_idx = 0
         retry_count = 0
@@ -212,6 +213,7 @@ class KyutaiStreamCoordinator:
                             sentence_idx,
                             self._cumulative_audio_time,
                             voice_preset,
+                            tts_instruct,
                         )
                         if audio_chunk:
                             retry_count = 0

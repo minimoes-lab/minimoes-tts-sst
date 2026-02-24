@@ -117,6 +117,7 @@ class QwenTTSWorker:
         sentence_index: int,
         cumulative_time: float,
         voice_preset: Optional[str] = None,
+        tts_instruct: Optional[str] = None,
     ) -> Optional[AudioChunk]:
         """Generate TTS audio for a single sentence with streaming."""
         if self._cancelled:
@@ -128,6 +129,7 @@ class QwenTTSWorker:
             self._generate_audio_sync,
             sentence,
             voice_preset,
+            tts_instruct,
         )
         
         if result is None or self._cancelled:
@@ -146,7 +148,7 @@ class QwenTTSWorker:
         )
     
     def _generate_audio_sync(
-        self, text: str, voice_preset: Optional[str]
+        self, text: str, voice_preset: Optional[str], tts_instruct: Optional[str]
     ) -> Optional[Tuple[np.ndarray, bytes]]:
         """Synchronous audio generation with Qwen3-TTS."""
         try:
@@ -162,7 +164,8 @@ class QwenTTSWorker:
                 audio_tuple = self.model.generate_custom_voice(
                     text=text,
                     language="English",
-                    speaker=speaker
+                    speaker=speaker,
+                    instruct=tts_instruct,
                 )
                 
                 if audio_tuple is None or len(audio_tuple) < 2:
