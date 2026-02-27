@@ -10,6 +10,11 @@ import numpy as np
 import requests
 import websockets
 
+try:
+    import winsound  # type: ignore
+except Exception:
+    winsound = None
+
 
 def _write_wav_pcm16(path: str, pcm: bytes, sample_rate: int, channels: int) -> None:
     bits_per_sample = 16
@@ -93,6 +98,7 @@ async def main():
     voice_id = os.environ.get("VOICE_ID", "default").strip() or "default"
     chunk_ms = int(os.environ.get("CHUNK_MS", "50"))
     play_live = os.environ.get("PLAY_LIVE", "1") not in ("0", "false", "False")
+    play_file = os.environ.get("PLAY_FILE", "0") in ("1", "true", "True")
     jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "3"))
     list_devices = os.environ.get("LIST_DEVICES", "0") in ("1", "true", "True")
     output_device = os.environ.get("OUTPUT_DEVICE")
@@ -151,92 +157,106 @@ async def main():
     got_final_audio = False
     got_final_bs = False
 
-    async with websockets.connect(ws_url, max_size=None) as ws:
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "start",
-                    "session_id": session_id,
-                    "question": question,
-                    "return_audio": True,
-                    "chunk_ms": chunk_ms,
-                    "voice_preset": voice_preset,
-                    "voice_id": voice_id,
-                    "tts_instruct": tts_instruct,
-                }
+    try:
+        async with websockets.connect(
+            ws_url,
+            max_size=None,
+            ping_interval=None,
+            close_timeout=30,
+        ) as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "start",
+                        "session_id": session_id,
+                        "question": question,
+                        "return_audio": True,
+                        "chunk_ms": chunk_ms,
+                        "voice_preset": voice_preset,
+                        "voice_id": voice_id,
+                        "tts_instruct": tts_instruct,
+                    }
+                )
             )
-        )
 
-        while True:
-            raw = await ws.recv()
-            msg = json.loads(raw)
+            while True:
+                raw = await ws.recv()
+                msg = json.loads(raw)
 
-            mtype = msg.get("type")
-            if mtype == "audio_chunk":
-                if msg.get("is_final"):
-                    got_final_audio = True
-                sample_rate = int(msg.get("sample_rate") or sample_rate)
-                channels = int(msg.get("channels") or channels)
+                mtype = msg.get("type")
+                if mtype == "status":
+                    status = msg.get("status")
+                    message = msg.get("message")
+                    print(f"[server status] {status}: {message}")
+                    if status == "error":
+                        raise RuntimeError(message or "Streaming error")
+                elif mtype == "audio_chunk":
+                    if msg.get("is_final"):
+                        got_final_audio = True
+                    sample_rate = int(msg.get("sample_rate") or sample_rate)
+                    channels = int(msg.get("channels") or channels)
 
-                if ring is None:
-                    cap = max(1, int(sample_rate * 10))
-                    ring = _PCM16RingBuffer(capacity_samples=cap)
+                    if ring is None:
+                        cap = max(1, int(sample_rate * 10))
+                        ring = _PCM16RingBuffer(capacity_samples=cap)
 
-                    if sd is not None and channels == 1:
-                        def _cb(outdata, frames, time_info, status):
-                            chunk = ring.read(frames)
-                            outdata[:, 0] = (chunk.astype(np.float32) / 32768.0)
+                        if sd is not None and channels == 1:
+                            def _cb(outdata, frames, time_info, status):
+                                chunk = ring.read(frames)
+                                outdata[:, 0] = (chunk.astype(np.float32) / 32768.0)
 
-                        stream = sd.OutputStream(
-                            samplerate=sample_rate,
-                            channels=1,
-                            dtype="float32",
-                            callback=_cb,
-                            blocksize=0,
-                            device=sd_device,
-                        )
-                        stream.start()
+                            stream = sd.OutputStream(
+                                samplerate=sample_rate,
+                                channels=1,
+                                dtype="float32",
+                                callback=_cb,
+                                blocksize=0,
+                                device=sd_device,
+                            )
+                            stream.start()
 
-                b64 = msg.get("audio_bytes_base64") or ""
-                if b64:
-                    idx = msg.get("chunk_index")
-                    if isinstance(idx, int):
-                        pcm_chunks[idx] = base64.b64decode(b64)
+                    b64 = msg.get("audio_bytes_base64") or ""
+                    if b64:
+                        idx = msg.get("chunk_index")
+                        if isinstance(idx, int):
+                            pcm_chunks[idx] = base64.b64decode(b64)
 
-                        if expected_idx is None:
-                            expected_idx = idx
+                            if expected_idx is None:
+                                expected_idx = idx
 
-                        if ring is not None and expected_idx is not None:
-                            while expected_idx in pcm_chunks:
-                                if not play_ready:
-                                    contiguous = 0
-                                    k = expected_idx
-                                    while k in pcm_chunks and contiguous < max(1, jitter_chunks):
-                                        contiguous += 1
-                                        k += 1
-                                    if contiguous >= max(1, jitter_chunks):
-                                        play_ready = True
-                                if not play_ready:
-                                    break
+                            if ring is not None and expected_idx is not None:
+                                while expected_idx in pcm_chunks:
+                                    if not play_ready:
+                                        contiguous = 0
+                                        k = expected_idx
+                                        while k in pcm_chunks and contiguous < max(1, jitter_chunks):
+                                            contiguous += 1
+                                            k += 1
+                                        if contiguous >= max(1, jitter_chunks):
+                                            play_ready = True
+                                    if not play_ready:
+                                        break
 
-                                raw_bytes = pcm_chunks.pop(expected_idx)
-                                samples = np.frombuffer(raw_bytes, dtype=np.int16)
-                                ring.write(samples)
-                                pcm_chunks[expected_idx] = raw_bytes
-                                expected_idx += 1
+                                    raw_bytes = pcm_chunks[expected_idx]
+                                    samples = np.frombuffer(raw_bytes, dtype=np.int16)
+                                    ring.write(samples)
+                                    expected_idx += 1
+                elif mtype == "blendshapes":
+                    si = msg.get("sentence_index")
+                    ci = msg.get("chunk_index")
+                    if isinstance(si, int) and isinstance(ci, int):
+                        out_path = os.path.join(bs_out, f"blendshapes_s{si}_c{ci}.json")
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            json.dump(msg, f, ensure_ascii=False)
+                    if msg.get("is_final"):
+                        got_final_bs = True
 
-            elif mtype == "blendshapes":
-                si = msg.get("sentence_index")
-                ci = msg.get("chunk_index")
-                if isinstance(si, int) and isinstance(ci, int):
-                    out_path = os.path.join(bs_out, f"blendshapes_s{si}_c{ci}.json")
-                    with open(out_path, "w", encoding="utf-8") as f:
-                        json.dump(msg, f, ensure_ascii=False)
-                if msg.get("is_final"):
-                    got_final_bs = True
-
-            if got_final_audio and got_final_bs:
-                break
+                if got_final_audio and got_final_bs:
+                    break
+    except websockets.exceptions.ConnectionClosedOK:
+        print("WebSocket closed by server (OK).")
+    except websockets.exceptions.ConnectionClosedError as e:
+        print(f"WebSocket closed by server with error: {e}")
 
     if stream is not None:
         try:
@@ -246,11 +266,19 @@ async def main():
             pass
 
     ordered = b"".join(pcm_chunks[i] for i in sorted(pcm_chunks.keys()))
-    out_path = os.path.join(out_root, "final_pcm_stream.wav")
-    _write_wav_pcm16(out_path, ordered, sample_rate, channels)
-    print(
-        f"Wrote: {out_path} bytes={len(ordered)} sr={sample_rate} ch={channels}"
-    )
+    if ordered:
+        out_path = os.path.join(out_root, "final_pcm_stream.wav")
+        _write_wav_pcm16(out_path, ordered, sample_rate, channels)
+        print(
+            f"Wrote: {out_path} bytes={len(ordered)} sr={sample_rate} ch={channels}"
+        )
+        if play_file and winsound is not None:
+            try:
+                winsound.PlaySound(out_path, winsound.SND_FILENAME)
+            except Exception as e:
+                print(f"WARN Failed to play file: {e}")
+    else:
+        print("No PCM audio received; nothing to write.")
 
     if play_live and sd is None:
         print("Live playback requested but sounddevice is not installed. Install with: pip install sounddevice")
