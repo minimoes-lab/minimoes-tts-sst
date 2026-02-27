@@ -86,23 +86,50 @@ def health():
     return {"status": "healthy"}
 
 
-_tts_worker_for_speakers: Optional[QwenTTSWorker] = None
-
-_tts_worker_cached: Optional[QwenTTSWorker] = None
-_tts_worker_cached_ref: Optional[tuple] = None
 _tts_worker_lock = threading.Lock()
+
+_tts_model_worker: Optional[QwenTTSWorker] = None
+
+_voice_store: Dict[str, Dict[str, Any]] = {}
 
 _tts_reference_audio_path: Optional[str] = os.getenv("TTS_REF_AUDIO_PATH")
 _tts_reference_text: Optional[str] = os.getenv("TTS_REF_TEXT")
+
+
+@app.post("/tts/warmup")
+async def tts_warmup():
+    global _tts_model_worker
+
+    device_str = "cuda" if torch.cuda.is_available() else "cpu"
+    with _tts_worker_lock:
+        if _tts_model_worker is not None:
+            return {"status": "ok", "warmed": True}
+
+    loop = asyncio.get_running_loop()
+
+    def _build_model_worker() -> QwenTTSWorker:
+        return QwenTTSWorker(
+            device=device_str,
+            use_qwen3=True,
+            reference_audio_path=None,
+            reference_text=None,
+        )
+
+    worker = await loop.run_in_executor(None, _build_model_worker)
+    with _tts_worker_lock:
+        _tts_model_worker = worker
+
+    return {"status": "ok", "warmed": True}
 
 
 @app.post("/tts/reference_audio")
 async def set_tts_reference_audio(
     audio: UploadFile = File(...),
     text: str = Form(...),
+    voice_id: str = Form("default"),
 ):
-    global _tts_reference_audio_path, _tts_reference_text, _tts_worker_for_speakers
-    global _tts_worker_cached, _tts_worker_cached_ref
+    global _tts_reference_audio_path, _tts_reference_text
+    global _tts_model_worker
 
     if audio is None:
         raise HTTPException(status_code=400, detail="Missing audio file")
@@ -129,19 +156,41 @@ async def set_tts_reference_audio(
         except Exception:
             pass
 
-    _tts_reference_audio_path = ref_path
-    _tts_reference_text = text.strip()
-
-    # Invalidate cached worker so /tts/speakers reflects new reference immediately
-    _tts_worker_for_speakers = None
+    # Ensure model is warmed (loaded) so we can build the reusable prompt.
     with _tts_worker_lock:
-        _tts_worker_cached = None
-        _tts_worker_cached_ref = None
+        model_worker = _tts_model_worker
+
+    if model_worker is None:
+        await tts_warmup()
+        with _tts_worker_lock:
+            model_worker = _tts_model_worker
+
+    if model_worker is None:
+        raise HTTPException(status_code=500, detail="TTS warmup failed")
+
+    try:
+        prompt = model_worker.create_voice_clone_prompt(ref_path, text.strip())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to build voice clone prompt: {e}")
+
+    _voice_store[str(voice_id)] = {
+        "audio_path": ref_path,
+        "text": text.strip(),
+        "prompt": prompt,
+    }
+
+    # Backwards compatible: keep env-style 'default' reference values
+    if str(voice_id) == "default":
+        _tts_reference_audio_path = ref_path
+        _tts_reference_text = text.strip()
+
+    # Nothing else to invalidate here: WS uses _tts_model_worker + _voice_store
 
     return {
         "status": "ok",
         "reference_configured": True,
-        "reference_audio_path": _tts_reference_audio_path,
+        "reference_audio_path": ref_path,
+        "voice_id": str(voice_id),
     }
 
 
@@ -157,6 +206,7 @@ def get_tts_speakers():
         "default_speaker": None,
         "tts_mode": "base_voice_clone",
         "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text),
+        "voice_ids": sorted(list(_voice_store.keys())),
     }
 
 # Load blendshape model at startup (moved to startup event)
@@ -620,6 +670,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         question = init_msg.get("question")
         voice_preset = init_msg.get("voice_preset")
         tts_instruct = init_msg.get("tts_instruct")
+        voice_id = init_msg.get("voice_id") or "default"
         return_audio = init_msg.get("return_audio", True)
         use_qwen = init_msg.get("use_qwen", True)  # Default to Qwen3-TTS
         use_optimized_bs = init_msg.get("use_optimized_bs", True)
@@ -646,46 +697,35 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         
         # Create workers based on configuration
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"[{datetime.now()}] Using Qwen3-TTS worker")
-        global _tts_reference_audio_path, _tts_reference_text
-        tts_ref_audio = _tts_reference_audio_path
-        tts_ref_text = _tts_reference_text
+        global _tts_model_worker
+        with _tts_worker_lock:
+            model_worker = _tts_model_worker
 
-        if not tts_ref_audio or not tts_ref_text:
+        if model_worker is None:
             await websocket.send_json(
                 {
                     "type": "status",
                     "status": "error",
-                    "message": "Missing voice-clone reference. Set TTS_REF_AUDIO_PATH and TTS_REF_TEXT on the server (RunPod) before using Base voice-clone streaming.",
+                    "message": "TTS model not warmed. Call POST /tts/warmup first.",
                 }
             )
             await websocket.close()
             return
 
-        # Build (or reuse) the heavy TTS worker in a thread to avoid blocking the event loop
-        # and triggering proxy/WebSocket keepalive timeouts.
-        global _tts_worker_cached, _tts_worker_cached_ref
-        ref_key = (device_str, tts_ref_audio, tts_ref_text)
-        with _tts_worker_lock:
-            cached = _tts_worker_cached if _tts_worker_cached_ref == ref_key else None
+        voice_entry = _voice_store.get(str(voice_id))
+        voice_prompt = voice_entry.get("prompt") if isinstance(voice_entry, dict) else None
+        if voice_prompt is None:
+            await websocket.send_json(
+                {
+                    "type": "status",
+                    "status": "error",
+                    "message": f"Unknown voice_id '{voice_id}'. Upload it via POST /tts/reference_audio (voice_id) before streaming.",
+                }
+            )
+            await websocket.close()
+            return
 
-        if cached is None:
-            loop = asyncio.get_running_loop()
-
-            def _build_worker() -> QwenTTSWorker:
-                return QwenTTSWorker(
-                    device=device_str,
-                    use_qwen3=True,
-                    reference_audio_path=tts_ref_audio,
-                    reference_text=tts_ref_text,
-                )
-
-            tts_worker = await loop.run_in_executor(None, _build_worker)
-            with _tts_worker_lock:
-                _tts_worker_cached = tts_worker
-                _tts_worker_cached_ref = ref_key
-        else:
-            tts_worker = cached
+        tts_worker = model_worker
         
         if use_optimized_bs:
             print(f"[{datetime.now()}] Using optimized blendshape worker")
@@ -707,6 +747,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             question=question,
             voice_preset=voice_preset,
             tts_instruct=tts_instruct,
+            voice_clone_prompt=voice_prompt,
             return_audio=return_audio,
             chunk_ms=chunk_ms,
         )

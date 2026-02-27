@@ -44,6 +44,8 @@ class QwenTTSWorker:
         self._cancelled = False
         self.use_qwen3 = use_qwen3
         self.model_loaded = False
+        self.speakers = []
+        self.default_speaker = None
         self.reference_audio_path = reference_audio_path
         self.reference_text: Optional[str] = reference_text
         self.voice_clone_prompt = None
@@ -83,6 +85,8 @@ class QwenTTSWorker:
             model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
             if not reuse_shared:
+                self.speakers = []
+                self.default_speaker = None
                 torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
                 try:
                     self.model = Qwen3TTSModel.from_pretrained(
@@ -121,16 +125,12 @@ class QwenTTSWorker:
                 except Exception as opt_err:
                     print(f"[{datetime.now()}] [Qwen TTS] Warning: Could not enable optimizations: {opt_err}")
             
-            # Build voice clone prompt once (required for Base voice-clone streaming)
-            if self.reference_audio_path:
-                if not self.reference_text:
-                    raise ValueError("reference_text is required for Base voice-clone streaming")
+            # Build voice clone prompt if provided (optional for warmup / model preload)
+            if self.reference_audio_path and self.reference_text:
                 self.voice_clone_prompt = self.model.create_voice_clone_prompt(
                     ref_audio=self.reference_audio_path,
                     ref_text=self.reference_text,
                 )
-            else:
-                raise ValueError("reference_audio_path is required for Base voice-clone streaming")
 
             if (not reuse_shared) and self.device == "cuda":
                 try:
@@ -138,12 +138,13 @@ class QwenTTSWorker:
                         "Hello.",
                         "This is a warmup.",
                     ]
-                    for wtext in warmup_texts:
-                        _ = self.model.generate_voice_clone(
-                            text=wtext,
-                            language="English",
-                            voice_clone_prompt=self.voice_clone_prompt,
-                        )
+                    if self.voice_clone_prompt is not None:
+                        for wtext in warmup_texts:
+                            _ = self.model.generate_voice_clone(
+                                text=wtext,
+                                language="English",
+                                voice_clone_prompt=self.voice_clone_prompt,
+                            )
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup complete")
                 except Exception as warmup_err:
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup skipped: {warmup_err}")
@@ -169,6 +170,11 @@ class QwenTTSWorker:
             self.model = None
             self.model_loaded = False
             self.sr = 24000  # Fallback uses 24kHz
+
+    def create_voice_clone_prompt(self, ref_audio_path: str, ref_text: str):
+        if self.model is None or not self.model_loaded:
+            raise RuntimeError("Model not loaded")
+        return self.model.create_voice_clone_prompt(ref_audio=ref_audio_path, ref_text=ref_text)
     
     async def stream_sentence(
         self,
@@ -176,6 +182,7 @@ class QwenTTSWorker:
         sentence_index: int,
         cumulative_time: float,
         language: str = "English",
+        voice_clone_prompt=None,
         emit_every_frames: int = 4,
         decode_window_frames: int = 80,
         overlap_samples: int = 0,
@@ -185,14 +192,16 @@ class QwenTTSWorker:
             return
         if self.model is None or not self.model_loaded:
             return
-        if self.voice_clone_prompt is None:
+
+        prompt = voice_clone_prompt if voice_clone_prompt is not None else self.voice_clone_prompt
+        if prompt is None:
             raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
 
         t_cursor = float(cumulative_time)
         for chunk, sr in self.model.stream_generate_voice_clone(
             text=sentence,
             language=language,
-            voice_clone_prompt=self.voice_clone_prompt,
+            voice_clone_prompt=prompt,
             emit_every_frames=emit_every_frames,
             decode_window_frames=decode_window_frames,
             overlap_samples=overlap_samples,
@@ -220,6 +229,7 @@ class QwenTTSWorker:
         cumulative_time: float,
         voice_preset: Optional[str] = None,
         tts_instruct: Optional[str] = None,
+        voice_clone_prompt=None,
     ) -> Optional[AudioChunk]:
         """Generate full audio for a single sentence (fallback path)."""
         if self._cancelled:
@@ -232,6 +242,7 @@ class QwenTTSWorker:
             sentence,
             voice_preset,
             tts_instruct,
+            voice_clone_prompt,
         )
         
         if result is None or self._cancelled:
@@ -250,7 +261,11 @@ class QwenTTSWorker:
         )
     
     def _generate_audio_sync(
-        self, text: str, voice_preset: Optional[str], tts_instruct: Optional[str]
+        self,
+        text: str,
+        voice_preset: Optional[str],
+        tts_instruct: Optional[str],
+        voice_clone_prompt=None,
     ) -> Optional[Tuple[np.ndarray, bytes]]:
         """Synchronous audio generation with Qwen3-TTS (Base voice-clone fallback)."""
         try:
@@ -259,14 +274,15 @@ class QwenTTSWorker:
             if self.model is None or not self.model_loaded:
                 return self._fallback_synthesis(text)
 
-            if self.voice_clone_prompt is None:
+            prompt = voice_clone_prompt if voice_clone_prompt is not None else self.voice_clone_prompt
+            if prompt is None:
                 raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
             
             with torch.no_grad():
                 audio_tuple = self.model.generate_voice_clone(
                     text=text,
                     language="English",
-                    voice_clone_prompt=self.voice_clone_prompt,
+                    voice_clone_prompt=prompt,
                 )
                 
                 if audio_tuple is None or len(audio_tuple) < 2:

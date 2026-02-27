@@ -90,6 +90,7 @@ async def main():
     question = os.environ.get("QUESTION", "Hello how are you?")
     voice_preset = os.environ.get("VOICE_PRESET", "").strip() or None
     tts_instruct = os.environ.get("TTS_INSTRUCT", "").strip() or None
+    voice_id = os.environ.get("VOICE_ID", "default").strip() or "default"
     chunk_ms = int(os.environ.get("CHUNK_MS", "50"))
     play_live = os.environ.get("PLAY_LIVE", "1") not in ("0", "false", "False")
     jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "3"))
@@ -160,6 +161,7 @@ async def main():
                     "return_audio": True,
                     "chunk_ms": chunk_ms,
                     "voice_preset": voice_preset,
+                    "voice_id": voice_id,
                     "tts_instruct": tts_instruct,
                 }
             )

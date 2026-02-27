@@ -71,6 +71,8 @@ class KyutaiStreamCoordinator:
         self.tts = tts_worker
         self.bs = blendshape_worker
         self.config = config
+
+        self._voice_clone_prompt = None
         
         # Sentence buffering
         self.sentence_buffer = SentenceBuffer(min_chars=12, max_chars=160)
@@ -109,6 +111,7 @@ class KyutaiStreamCoordinator:
         question: str,
         voice_preset: Optional[str] = None,
         tts_instruct: Optional[str] = None,
+        voice_clone_prompt=None,
         return_audio: bool = True,
         chunk_ms: Optional[int] = None,
     ):
@@ -119,6 +122,8 @@ class KyutaiStreamCoordinator:
 
         if isinstance(chunk_ms, int) and chunk_ms > 0:
             self._chunk_ms = chunk_ms
+        
+        self._voice_clone_prompt = voice_clone_prompt
         
         await self._send_status("processing", "Starting Kyutai-optimized pipeline")
         
@@ -211,6 +216,7 @@ class KyutaiStreamCoordinator:
                             sentence=sentence,
                             sentence_index=sentence_idx,
                             cumulative_time=self._cumulative_audio_time,
+                            voice_clone_prompt=self._voice_clone_prompt,
                         ):
                             if self._cancelled:
                                 break
@@ -231,6 +237,7 @@ class KyutaiStreamCoordinator:
                             self._cumulative_audio_time,
                             voice_preset,
                             tts_instruct,
+                            self._voice_clone_prompt,
                         )
                         if audio_chunk:
                             retry_count = 0
