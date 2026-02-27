@@ -77,7 +77,7 @@ class QwenTTSWorker:
             
             # Use ModelScope model path
             model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-
+            
             torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
             try:
                 self.model = Qwen3TTSModel.from_pretrained(
