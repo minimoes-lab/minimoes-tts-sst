@@ -86,12 +86,61 @@ def health():
 
 _tts_worker_for_speakers: Optional[QwenTTSWorker] = None
 
+_tts_reference_audio_path: Optional[str] = os.getenv("TTS_REF_AUDIO_PATH")
+_tts_reference_text: Optional[str] = os.getenv("TTS_REF_TEXT")
+
+
+@app.post("/tts/reference_audio")
+async def set_tts_reference_audio(
+    audio: UploadFile = File(...),
+    text: str = Form(...),
+):
+    global _tts_reference_audio_path, _tts_reference_text, _tts_worker_for_speakers
+
+    if audio is None:
+        raise HTTPException(status_code=400, detail="Missing audio file")
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Missing reference text")
+
+    filename = (audio.filename or "").lower()
+    if filename and not filename.endswith(".wav"):
+        raise HTTPException(status_code=400, detail="Reference audio must be a .wav file")
+
+    ref_dir = os.path.join(BASE_DIR, "tts_reference")
+    os.makedirs(ref_dir, exist_ok=True)
+    ref_path = os.path.join(ref_dir, f"ref_{uuid.uuid4().hex}.wav")
+
+    try:
+        content = await audio.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+        with open(ref_path, "wb") as f:
+            f.write(content)
+    finally:
+        try:
+            await audio.close()
+        except Exception:
+            pass
+
+    _tts_reference_audio_path = ref_path
+    _tts_reference_text = text.strip()
+
+    # Invalidate cached worker so /tts/speakers reflects new reference immediately
+    _tts_worker_for_speakers = None
+
+    return {
+        "status": "ok",
+        "reference_configured": True,
+        "reference_audio_path": _tts_reference_audio_path,
+    }
+
 
 @app.get("/tts/speakers")
 def get_tts_speakers():
     global _tts_worker_for_speakers
-    tts_ref_audio = os.getenv("TTS_REF_AUDIO_PATH")
-    tts_ref_text = os.getenv("TTS_REF_TEXT")
+    global _tts_reference_audio_path, _tts_reference_text
+    tts_ref_audio = _tts_reference_audio_path
+    tts_ref_text = _tts_reference_text
 
     if _tts_worker_for_speakers is None:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -608,8 +657,9 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         # Create workers based on configuration
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[{datetime.now()}] Using Qwen3-TTS worker")
-        tts_ref_audio = os.getenv("TTS_REF_AUDIO_PATH")
-        tts_ref_text = os.getenv("TTS_REF_TEXT")
+        global _tts_reference_audio_path, _tts_reference_text
+        tts_ref_audio = _tts_reference_audio_path
+        tts_ref_text = _tts_reference_text
 
         if not tts_ref_audio or not tts_ref_text:
             await websocket.send_json(
