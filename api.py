@@ -90,16 +90,37 @@ _tts_worker_for_speakers: Optional[QwenTTSWorker] = None
 @app.get("/tts/speakers")
 def get_tts_speakers():
     global _tts_worker_for_speakers
+    tts_ref_audio = os.getenv("TTS_REF_AUDIO_PATH")
+    tts_ref_text = os.getenv("TTS_REF_TEXT")
+
     if _tts_worker_for_speakers is None:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        _tts_worker_for_speakers = QwenTTSWorker(device=device_str, use_qwen3=True)
+        try:
+            _tts_worker_for_speakers = QwenTTSWorker(
+                device=device_str,
+                use_qwen3=True,
+                reference_audio_path=tts_ref_audio,
+                reference_text=tts_ref_text,
+            )
+        except Exception as e:
+            return {
+                "speakers": [],
+                "default_speaker": None,
+                "tts_mode": "base_voice_clone",
+                "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text),
+                "error": str(e),
+            }
 
     speakers = getattr(_tts_worker_for_speakers, "speakers", None) or []
     default_speaker = getattr(_tts_worker_for_speakers, "default_speaker", None)
-    return {"speakers": speakers, "default_speaker": default_speaker}
-print(f"--- ATTEMPTING TO LOAD: {model_path} ---")
-blendshape_model = load_model(model_path, config, device)
-print(f"DEBUG: Absolute path is: {model_path}")
+    return {
+        "speakers": speakers,
+        "default_speaker": default_speaker,
+        "tts_mode": "base_voice_clone",
+        "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text)
+    }
+
+# Load blendshape model at startup (moved to startup event)
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
 
@@ -179,7 +200,7 @@ from fastapi.responses import PlainTextResponse
 @app.on_event("startup")
 async def load_models():
     """Load heavy ML models once when the API starts up."""
-    global embeddings_model
+    global embeddings_model, blendshape_model
 
     print(f"[{datetime.now()}] Starting model loading...")
     
@@ -188,6 +209,10 @@ async def load_models():
     embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'})
     embeddings_end_time = time.time()
     print(f"[{datetime.now()}] Embeddings model loaded successfully in {embeddings_end_time - embeddings_start_time:.2f} seconds.")
+    
+    print(f"--- ATTEMPTING TO LOAD: {model_path} ---")
+    blendshape_model = load_model(model_path, config, device)
+    print(f"DEBUG: Absolute path is: {model_path}")
     
     print(f"[{datetime.now()}] Model loading complete. Using Qwen3-TTS for speech generation.")
 
@@ -583,7 +608,14 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         # Create workers based on configuration
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[{datetime.now()}] Using Qwen3-TTS worker")
-        tts_worker = QwenTTSWorker(device=device_str, use_qwen3=True)
+        tts_ref_audio = os.getenv("TTS_REF_AUDIO_PATH")
+        tts_ref_text = os.getenv("TTS_REF_TEXT")
+        tts_worker = QwenTTSWorker(
+            device=device_str,
+            use_qwen3=True,
+            reference_audio_path=tts_ref_audio,
+            reference_text=tts_ref_text,
+        )
         
         if use_optimized_bs:
             print(f"[{datetime.now()}] Using optimized blendshape worker")

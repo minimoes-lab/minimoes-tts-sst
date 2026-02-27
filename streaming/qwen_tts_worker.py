@@ -8,7 +8,7 @@ import time
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import AsyncGenerator, Optional, Tuple
 
 import numpy as np
 import scipy.io.wavfile as wavfile
@@ -35,7 +35,7 @@ class QwenTTSWorker:
     _shared_loaded_device = None
     _shared_model_loaded = False
     
-    def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None):
+    def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None, reference_text: Optional[str] = None):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.model = None
         self.tokenizer = None
@@ -45,6 +45,8 @@ class QwenTTSWorker:
         self.use_qwen3 = use_qwen3
         self.model_loaded = False
         self.reference_audio_path = reference_audio_path
+        self.reference_text: Optional[str] = reference_text
+        self.voice_clone_prompt = None
         self._load_model()
     
     def _load_model(self):
@@ -54,6 +56,7 @@ class QwenTTSWorker:
             return
             
         try:
+            reuse_shared = False
             with self.__class__._shared_lock:
                 if (
                     self.__class__._shared_model_loaded
@@ -69,35 +72,37 @@ class QwenTTSWorker:
                     )
                     self.model_loaded = True
                     self.sr = 24000
-                    return
+                    reuse_shared = True
 
-            print(f"[{datetime.now()}] [Qwen TTS] Loading Qwen3-TTS model...")
+            if not reuse_shared:
+                print(f"[{datetime.now()}] [Qwen TTS] Loading Qwen3-TTS model...")
             
             from qwen_tts import Qwen3TTSModel
             
-            # Use ModelScope model path
-            model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-            
-            torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-            try:
-                self.model = Qwen3TTSModel.from_pretrained(
-                    model_name,
-                    device_map=self.device,
-                    torch_dtype=torch_dtype,
-                    attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
-                    trust_remote_code=True,
-                )
-            except Exception as e:
-                print(f"[{datetime.now()}] [Qwen TTS] Warning: flash_attention_2 not available: {e}")
-                self.model = Qwen3TTSModel.from_pretrained(
-                    model_name,
-                    device_map=self.device,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=True,
-                )
+            # Base model supports streaming inference (voice clone)
+            model_name = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+            if not reuse_shared:
+                torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+                try:
+                    self.model = Qwen3TTSModel.from_pretrained(
+                        model_name,
+                        device_map=self.device,
+                        torch_dtype=torch_dtype,
+                        attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
+                        trust_remote_code=True,
+                    )
+                except Exception as e:
+                    print(f"[{datetime.now()}] [Qwen TTS] Warning: flash_attention_2 not available: {e}")
+                    self.model = Qwen3TTSModel.from_pretrained(
+                        model_name,
+                        device_map=self.device,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=True,
+                    )
             
             # OPTIMIZATION 6x: Enable streaming optimizations (torch.compile + CUDA graphs)
-            if self.device == "cuda":
+            if (not reuse_shared) and self.device == "cuda":
                 print(f"[{datetime.now()}] [Qwen TTS] Enabling 6x streaming optimizations...")
                 try:
                     if hasattr(self.model, "enable_streaming_optimizations"):
@@ -116,22 +121,28 @@ class QwenTTSWorker:
                 except Exception as opt_err:
                     print(f"[{datetime.now()}] [Qwen TTS] Warning: Could not enable optimizations: {opt_err}")
             
-            # Get available speakers
-            self.speakers = self.model.get_supported_speakers() or []
-            self.default_speaker = self.speakers[0] if self.speakers else "aiden"
+            # Build voice clone prompt once (required for Base voice-clone streaming)
+            if self.reference_audio_path:
+                if not self.reference_text:
+                    raise ValueError("reference_text is required for Base voice-clone streaming")
+                self.voice_clone_prompt = self.model.create_voice_clone_prompt(
+                    ref_audio=self.reference_audio_path,
+                    ref_text=self.reference_text,
+                )
+            else:
+                raise ValueError("reference_audio_path is required for Base voice-clone streaming")
 
-            if self.device == "cuda":
+            if (not reuse_shared) and self.device == "cuda":
                 try:
                     warmup_texts = [
                         "Hello.",
                         "This is a warmup.",
                     ]
                     for wtext in warmup_texts:
-                        _ = self.model.generate_custom_voice(
+                        _ = self.model.generate_voice_clone(
                             text=wtext,
                             language="English",
-                            speaker=self.default_speaker,
-                            instruct=None,
+                            voice_clone_prompt=self.voice_clone_prompt,
                         )
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup complete")
                 except Exception as warmup_err:
@@ -159,6 +170,49 @@ class QwenTTSWorker:
             self.model_loaded = False
             self.sr = 24000  # Fallback uses 24kHz
     
+    async def stream_sentence(
+        self,
+        sentence: str,
+        sentence_index: int,
+        cumulative_time: float,
+        language: str = "English",
+        emit_every_frames: int = 4,
+        decode_window_frames: int = 80,
+        overlap_samples: int = 0,
+    ) -> AsyncGenerator[AudioChunk, None]:
+        """Stream PCM chunks for one sentence using Base model voice-clone streaming."""
+        if self._cancelled:
+            return
+        if self.model is None or not self.model_loaded:
+            return
+        if self.voice_clone_prompt is None:
+            raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
+
+        t_cursor = float(cumulative_time)
+        for chunk, sr in self.model.stream_generate_voice_clone(
+            text=sentence,
+            language=language,
+            voice_clone_prompt=self.voice_clone_prompt,
+            emit_every_frames=emit_every_frames,
+            decode_window_frames=decode_window_frames,
+            overlap_samples=overlap_samples,
+        ):
+            if self._cancelled:
+                break
+            if isinstance(chunk, torch.Tensor):
+                chunk = chunk.cpu().numpy()
+            chunk = chunk.astype(np.float32)
+            dur = float(len(chunk) / sr) if sr else 0.0
+            yield AudioChunk(
+                sentence_index=sentence_index,
+                audio_bytes=b"",
+                audio_np=chunk,
+                sample_rate=int(sr),
+                start_time=t_cursor,
+                duration=dur,
+            )
+            t_cursor += dur
+
     async def process_sentence(
         self,
         sentence: str,
@@ -167,7 +221,7 @@ class QwenTTSWorker:
         voice_preset: Optional[str] = None,
         tts_instruct: Optional[str] = None,
     ) -> Optional[AudioChunk]:
-        """Generate TTS audio for a single sentence with streaming."""
+        """Generate full audio for a single sentence (fallback path)."""
         if self._cancelled:
             return None
         
@@ -198,22 +252,21 @@ class QwenTTSWorker:
     def _generate_audio_sync(
         self, text: str, voice_preset: Optional[str], tts_instruct: Optional[str]
     ) -> Optional[Tuple[np.ndarray, bytes]]:
-        """Synchronous audio generation with Qwen3-TTS (optimized 6x)."""
+        """Synchronous audio generation with Qwen3-TTS (Base voice-clone fallback)."""
         try:
             start = time.time()
             
             if self.model is None or not self.model_loaded:
                 return self._fallback_synthesis(text)
+
+            if self.voice_clone_prompt is None:
+                raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
             
             with torch.no_grad():
-                # Use optimized generate_custom_voice method
-                # With torch.compile enabled, this is ~6x faster
-                speaker = voice_preset if voice_preset else self.default_speaker
-                audio_tuple = self.model.generate_custom_voice(
+                audio_tuple = self.model.generate_voice_clone(
                     text=text,
                     language="English",
-                    speaker=speaker,
-                    instruct=tts_instruct,
+                    voice_clone_prompt=self.voice_clone_prompt,
                 )
                 
                 if audio_tuple is None or len(audio_tuple) < 2:

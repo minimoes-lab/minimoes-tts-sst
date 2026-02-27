@@ -203,6 +203,23 @@ class KyutaiStreamCoordinator:
                 sentence = await self._sentence_queue.get()
                 if sentence is None:
                     break
+
+                # Inference streaming path (Base voice-clone)
+                if hasattr(self.tts, "stream_sentence"):
+                    try:
+                        async for audio_chunk in self.tts.stream_sentence(
+                            sentence=sentence,
+                            sentence_index=sentence_idx,
+                            cumulative_time=self._cumulative_audio_time,
+                        ):
+                            if self._cancelled:
+                                break
+                            self._cumulative_audio_time += audio_chunk.duration
+                            await self._audio_queue.put(audio_chunk)
+                        sentence_idx += 1
+                        continue
+                    except Exception as e:
+                        print(f"[{datetime.now()}] [Kyutai TTS] Streaming path failed, fallback: {e}")
                 
                 # Try to generate audio with retries
                 audio_chunk = None
