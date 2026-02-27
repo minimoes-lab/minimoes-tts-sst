@@ -42,9 +42,8 @@ openai>=1.0.0
 accelerate==1.12.0
 safetensors
 
-qwen-tts
+git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git
 modelscope
-git+https://github.com/QwenLM/Qwen3-TTS.git
 tokenizers>=0.15.0
 
 # Performance monitoring

@@ -7,7 +7,7 @@ class SentenceBuffer:
 
     SPLIT_PATTERN = re.compile(r'(?<=[.!?;])\s+|(?<=\n)')
 
-    def __init__(self, min_chars: int = 20, max_chars: int = 200):
+    def __init__(self, min_chars: int = 12, max_chars: int = 160):
         self._buffer = ""
         self._min_chars = min_chars
         self._max_chars = max_chars
