@@ -4,9 +4,11 @@ Reference: https://github.com/kyutai-labs/delayed-streams-modeling
 """
 import asyncio
 import base64
+import io
 from datetime import datetime
 from typing import Optional, List
 import numpy as np
+import scipy.io.wavfile as wavfile
 
 from fastapi import WebSocket
 
@@ -266,8 +268,95 @@ class KyutaiStreamCoordinator:
     
     async def _blendshape_stage(self, return_audio: bool):
         """Stage 3: Blendshape generation with delayed stream sync."""
+        from streaming.qwen_tts_worker import AudioChunk
+        
         audio_chunk_idx = 0
         bs_chunk_idx = 0
+        
+        # Blendshape buffering: accumulate PCM until minimum duration for stable feature extraction
+        bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 200) or 200)
+        bs_min_samples = max(1, int((self.tts.sr or 24000) * (bs_min_chunk_ms / 1000.0)))
+        
+        bs_buf_audio: List[np.ndarray] = []
+        bs_buf_samples = 0
+        bs_buf_start_time: Optional[float] = None
+        bs_buf_sentence_index: Optional[int] = None
+        bs_buf_sample_rate: Optional[int] = None
+        
+        async def _flush_bs_buffer():
+            """Process accumulated PCM buffer into blendshapes."""
+            nonlocal bs_chunk_idx, bs_buf_audio, bs_buf_samples, bs_buf_start_time, bs_buf_sentence_index, bs_buf_sample_rate
+            
+            if bs_buf_samples <= 0 or not bs_buf_audio:
+                return
+            
+            # Concatenate buffered audio
+            audio_np = np.concatenate(bs_buf_audio, axis=0)
+            sr = int(bs_buf_sample_rate or (self.tts.sr or 24000))
+            duration = float(bs_buf_samples) / float(sr)
+            start_time = float(bs_buf_start_time or 0.0)
+            sentence_index = int(bs_buf_sentence_index or 0)
+            
+            # Ensure mono
+            if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
+                audio_np = audio_np[:, 0]
+            
+            # Reconstruct WAV bytes for BlendshapeWorker
+            audio_np_f32 = audio_np.astype(np.float32, copy=False)
+            audio_int16 = (np.clip(audio_np_f32, -1.0, 1.0) * 32767.0).astype(np.int16)
+            buf = io.BytesIO()
+            wavfile.write(buf, sr, audio_int16)
+            buf.seek(0)
+            wav_bytes = buf.read()
+            
+            # Create AudioChunk for blendshape inference
+            bs_audio_chunk = AudioChunk(
+                sentence_index=sentence_index,
+                audio_bytes=wav_bytes,
+                audio_np=audio_np,
+                sample_rate=sr,
+                start_time=start_time,
+                duration=duration,
+            )
+            
+            # Run blendshape inference
+            try:
+                bs_chunk = await self.bs.process_audio_chunk(bs_audio_chunk)
+                
+                if bs_chunk is None or not hasattr(bs_chunk, 'frames') or len(bs_chunk.frames) == 0:
+                    # Fallback: use last successful frame
+                    await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+                else:
+                    # Success: update last frames and push to delayed stream
+                    self._last_blendshape_frame = bs_chunk.frames[-1].copy()
+                    self._last_successful_frame = bs_chunk.frames[-1].copy()
+                    
+                    self.visual_stream.push(bs_chunk)
+                    ready_chunk = self.visual_stream.pop()
+                    if ready_chunk:
+                        await self.ws.send_json(
+                            make_blendshapes_msg(
+                                chunk_index=bs_chunk_idx,
+                                sentence_index=ready_chunk.sentence_index,
+                                frames=ready_chunk.frames.tolist(),
+                                start_time=ready_chunk.start_time,
+                                end_time=ready_chunk.end_time,
+                                frame_rate=ready_chunk.frame_rate,
+                                is_final=False,
+                            )
+                        )
+            except Exception as e:
+                print(f"[{datetime.now()}] [Kyutai BS] Inference error: {e}")
+                await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+            
+            bs_chunk_idx += 1
+            
+            # Reset buffer
+            bs_buf_audio = []
+            bs_buf_samples = 0
+            bs_buf_start_time = None
+            bs_buf_sentence_index = None
+            bs_buf_sample_rate = None
         
         try:
             while True:
@@ -282,39 +371,53 @@ class KyutaiStreamCoordinator:
                 if return_audio:
                     audio_chunk_idx = await self._send_audio_pcm16(audio_chunk_idx, audio_chunk)
                 
-                # Generate blendshapes with error handling
+                # Buffer PCM for blendshape inference
                 try:
-                    bs_chunk = await self.bs.process_audio_chunk(audio_chunk)
+                    sr = int(audio_chunk.sample_rate or (self.tts.sr or 24000))
+                    audio_np = audio_chunk.audio_np
                     
-                    if bs_chunk and not self._cancelled:
-                        if len(bs_chunk.frames) > 0:
-                            self._last_blendshape_frame = bs_chunk.frames[-1].copy()
-                            self._last_successful_frame = bs_chunk.frames[-1].copy()
-                        
-                        # Push to delayed visual stream
-                        self.visual_stream.push(bs_chunk)
-                        
-                        # Pop from delayed stream if ready
-                        ready_chunk = self.visual_stream.pop()
-                        if ready_chunk:
-                            await self.ws.send_json(
-                                make_blendshapes_msg(
-                                    chunk_index=bs_chunk_idx,
-                                    sentence_index=ready_chunk.sentence_index,
-                                    frames=ready_chunk.frames.tolist(),
-                                    start_time=ready_chunk.start_time,
-                                    end_time=ready_chunk.end_time,
-                                    frame_rate=ready_chunk.frame_rate,
-                                    is_final=False,
-                                )
-                            )
+                    if audio_np is None:
+                        # No audio data, send fallback
+                        await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
+                        bs_chunk_idx += 1
+                        continue
+                    
+                    # Ensure mono
+                    if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
+                        audio_np_mono = audio_np[:, 0]
+                    else:
+                        audio_np_mono = audio_np
+                    
+                    # Check if sentence changed: flush buffer before starting new sentence
+                    if (bs_buf_sentence_index is not None 
+                        and int(audio_chunk.sentence_index) != int(bs_buf_sentence_index)):
+                        await _flush_bs_buffer()
+                    
+                    # Initialize buffer if empty
+                    if bs_buf_start_time is None:
+                        bs_buf_start_time = float(audio_chunk.start_time)
+                        bs_buf_sentence_index = int(audio_chunk.sentence_index)
+                        bs_buf_sample_rate = sr
+                    
+                    # Accumulate PCM samples
+                    bs_buf_audio.append(audio_np_mono.astype(np.float32, copy=False))
+                    bs_buf_samples += int(audio_np_mono.shape[0])
+                    
+                    # Flush buffer if minimum duration reached
+                    if bs_buf_samples >= bs_min_samples:
+                        await _flush_bs_buffer()
                 
                 except Exception as e:
-                    print(f"[{datetime.now()}] [Kyutai BS] Error: {e}")
-                    # Use last successful frame as fallback
+                    print(f"[{datetime.now()}] [Kyutai BS] Buffer error: {e}")
                     await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
-                
-                bs_chunk_idx += 1
+                    bs_chunk_idx += 1
+            
+            # Flush any remaining buffered audio
+            try:
+                if not self._cancelled and bs_buf_samples > 0:
+                    await _flush_bs_buffer()
+            except Exception as e:
+                print(f"[{datetime.now()}] [Kyutai BS] Final flush error: {e}")
             
             # Flush delayed visual stream
             remaining = self.visual_stream.flush()
@@ -351,7 +454,11 @@ class KyutaiStreamCoordinator:
                     make_blendshapes_msg(
                         chunk_index=bs_chunk_idx,
                         sentence_index=max(0, self._sentence_index - 1),
-                        frames=[],
+                        frames=(
+                            [self._last_successful_frame.tolist()]
+                            if self._last_successful_frame is not None
+                            else []
+                        ),
                         start_time=self._cumulative_audio_time,
                         end_time=self._cumulative_audio_time,
                         frame_rate=60,
@@ -523,9 +630,6 @@ class KyutaiStreamCoordinator:
         duration = 0.5  # 500ms silence
         samples = int(duration * (self.tts.sr or 24000))
         audio_np = np.zeros(samples, dtype=np.float32)
-        
-        import io
-        import scipy.io.wavfile as wavfile
         
         buf = io.BytesIO()
         audio_int16 = (audio_np * 32767.0).astype(np.int16)
