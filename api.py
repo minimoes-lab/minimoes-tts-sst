@@ -610,6 +610,18 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         print(f"[{datetime.now()}] Using Qwen3-TTS worker")
         tts_ref_audio = os.getenv("TTS_REF_AUDIO_PATH")
         tts_ref_text = os.getenv("TTS_REF_TEXT")
+
+        if not tts_ref_audio or not tts_ref_text:
+            await websocket.send_json(
+                {
+                    "type": "status",
+                    "status": "error",
+                    "message": "Missing voice-clone reference. Set TTS_REF_AUDIO_PATH and TTS_REF_TEXT on the server (RunPod) before using Base voice-clone streaming.",
+                }
+            )
+            await websocket.close()
+            return
+
         tts_worker = QwenTTSWorker(
             device=device_str,
             use_qwen3=True,
