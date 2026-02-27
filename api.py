@@ -12,6 +12,8 @@ import base64
 import os
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import asyncio
+
 
 import uuid
 import shutil
@@ -86,6 +88,10 @@ def health():
 
 _tts_worker_for_speakers: Optional[QwenTTSWorker] = None
 
+_tts_worker_cached: Optional[QwenTTSWorker] = None
+_tts_worker_cached_ref: Optional[tuple] = None
+_tts_worker_lock = threading.Lock()
+
 _tts_reference_audio_path: Optional[str] = os.getenv("TTS_REF_AUDIO_PATH")
 _tts_reference_text: Optional[str] = os.getenv("TTS_REF_TEXT")
 
@@ -96,6 +102,7 @@ async def set_tts_reference_audio(
     text: str = Form(...),
 ):
     global _tts_reference_audio_path, _tts_reference_text, _tts_worker_for_speakers
+    global _tts_worker_cached, _tts_worker_cached_ref
 
     if audio is None:
         raise HTTPException(status_code=400, detail="Missing audio file")
@@ -127,6 +134,9 @@ async def set_tts_reference_audio(
 
     # Invalidate cached worker so /tts/speakers reflects new reference immediately
     _tts_worker_for_speakers = None
+    with _tts_worker_lock:
+        _tts_worker_cached = None
+        _tts_worker_cached_ref = None
 
     return {
         "status": "ok",
@@ -137,36 +147,16 @@ async def set_tts_reference_audio(
 
 @app.get("/tts/speakers")
 def get_tts_speakers():
-    global _tts_worker_for_speakers
     global _tts_reference_audio_path, _tts_reference_text
     tts_ref_audio = _tts_reference_audio_path
     tts_ref_text = _tts_reference_text
 
-    if _tts_worker_for_speakers is None:
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        try:
-            _tts_worker_for_speakers = QwenTTSWorker(
-                device=device_str,
-                use_qwen3=True,
-                reference_audio_path=tts_ref_audio,
-                reference_text=tts_ref_text,
-            )
-        except Exception as e:
-            return {
-                "speakers": [],
-                "default_speaker": None,
-                "tts_mode": "base_voice_clone",
-                "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text),
-                "error": str(e),
-            }
-
-    speakers = getattr(_tts_worker_for_speakers, "speakers", None) or []
-    default_speaker = getattr(_tts_worker_for_speakers, "default_speaker", None)
+    # Important: do NOT load the heavy TTS model here (RunPod proxy may timeout).
     return {
-        "speakers": speakers,
-        "default_speaker": default_speaker,
+        "speakers": [],
+        "default_speaker": None,
         "tts_mode": "base_voice_clone",
-        "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text)
+        "reference_configured": bool(tts_ref_audio) and bool(tts_ref_text),
     }
 
 # Load blendshape model at startup (moved to startup event)
@@ -672,12 +662,30 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             await websocket.close()
             return
 
-        tts_worker = QwenTTSWorker(
-            device=device_str,
-            use_qwen3=True,
-            reference_audio_path=tts_ref_audio,
-            reference_text=tts_ref_text,
-        )
+        # Build (or reuse) the heavy TTS worker in a thread to avoid blocking the event loop
+        # and triggering proxy/WebSocket keepalive timeouts.
+        global _tts_worker_cached, _tts_worker_cached_ref
+        ref_key = (device_str, tts_ref_audio, tts_ref_text)
+        with _tts_worker_lock:
+            cached = _tts_worker_cached if _tts_worker_cached_ref == ref_key else None
+
+        if cached is None:
+            loop = asyncio.get_running_loop()
+
+            def _build_worker() -> QwenTTSWorker:
+                return QwenTTSWorker(
+                    device=device_str,
+                    use_qwen3=True,
+                    reference_audio_path=tts_ref_audio,
+                    reference_text=tts_ref_text,
+                )
+
+            tts_worker = await loop.run_in_executor(None, _build_worker)
+            with _tts_worker_lock:
+                _tts_worker_cached = tts_worker
+                _tts_worker_cached_ref = ref_key
+        else:
+            tts_worker = cached
         
         if use_optimized_bs:
             print(f"[{datetime.now()}] Using optimized blendshape worker")
