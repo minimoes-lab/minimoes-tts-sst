@@ -8,7 +8,9 @@ config = {
     'output_dim': 68, # if you trained your own, this should also be 61
     'input_dim': 256,
     'frame_size': 128,
-    'use_half_precision': False
+    'use_half_precision': False,
+    'blendshape_divisor': 10.0,
+    'clamp_blendshapes': False,
 }
 
 # ---------------------------------------------------------------------------
@@ -118,13 +120,19 @@ def blendshapes_to_named_frames(frames):
     """
     names = get_blendshape_names()
     frame_rate = config['frame_rate']
+    clamp = bool(config.get('clamp_blendshapes', True))
     result = []
     for idx, frame in enumerate(frames):
-        # Clamp all values to [0.0, 1.0] range for ARKit compatibility
-        clamped_values = {
-            names[i]: round(max(0.0, min(1.0, float(v))), 6) 
-            for i, v in enumerate(frame)
-        }
+        if clamp:
+            clamped_values = {
+                names[i]: round(max(0.0, min(1.0, float(v))), 6) 
+                for i, v in enumerate(frame)
+            }
+        else:
+            clamped_values = {
+                names[i]: round(float(v), 6)
+                for i, v in enumerate(frame)
+            }
         entry = {
             "timestamp": round(idx / frame_rate, 6),
             "blendshapes": clamped_values,

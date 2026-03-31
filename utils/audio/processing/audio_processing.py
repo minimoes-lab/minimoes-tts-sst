@@ -146,7 +146,9 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
 
     # Normalize or apply any post-processing
     final_decoded_outputs = ensure_2d(final_decoded_outputs)
-    final_decoded_outputs[:, :61] /= 100  # Normalize specific columns
+    blendshape_divisor = float(config.get('blendshape_divisor', 100.0))
+    if blendshape_divisor != 0:
+        final_decoded_outputs[:, :61] /= blendshape_divisor  # Normalize specific columns
 
     # Easing effect for smooth start (fades in first 0.2 seconds)
     # In streaming mode, only apply to the first sentence chunk
@@ -162,7 +164,7 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
 
 
 def zero_columns(data):
-    columns_to_zero = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
+    columns_to_zero = [1, 2, 3, 4, 8, 9, 10, 11, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
     modified_data = np.copy(data) 
     modified_data[:, columns_to_zero] = 0
     return modified_data
