@@ -62,12 +62,14 @@ class OptimizedBlendshapeWorker:
                 )
             
             # Compile model for faster execution (PyTorch 2.0+)
-            if hasattr(torch, 'compile'):
-                try:
-                    print(f"[{datetime.now()}] [BS Worker] Compiling model with torch.compile")
-                    self.model = torch.compile(self.model, mode="reduce-overhead")
-                except Exception as e:
-                    print(f"[{datetime.now()}] [BS Worker] Compile failed: {e}")
+            # DISABLED: torch.compile takes 3+ minutes on CPU, causing client timeouts
+            # if hasattr(torch, 'compile'):
+            #     try:
+            #         print(f"[{datetime.now()}] [BS Worker] Compiling model with torch.compile")
+            #         self.model = torch.compile(self.model, mode="reduce-overhead")
+            #     except Exception as e:
+            #         print(f"[{datetime.now()}] [BS Worker] Compile failed: {e}")
+            pass
             
             # Set to eval mode and optimize for inference
             self.model.eval()
