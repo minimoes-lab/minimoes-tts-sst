@@ -128,6 +128,9 @@ class KyutaiStreamCoordinator:
         self._voice_clone_prompt = voice_clone_prompt
         
         await self._send_status("processing", "Starting Kyutai-optimized pipeline")
+        print(f"[{datetime.now()}] [Kyutai] Pipeline start")
+        print(f"[{datetime.now()}] [Kyutai] return_audio={return_audio} chunk_ms={self._chunk_ms}")
+        print(f"[{datetime.now()}] [Kyutai] voice_clone_prompt_present={self._voice_clone_prompt is not None}")
         
         # Create concurrent tasks
         llm_task = asyncio.create_task(self._llm_stage(rag_chain, question))
@@ -160,16 +163,23 @@ class KyutaiStreamCoordinator:
                 await self._send_status("interrupted", "Generation interrupted")
             else:
                 await self._send_status("complete", "Generation complete")
+            print(f"[{datetime.now()}] [Kyutai] Pipeline end cancelled={self._cancelled}")
     
     async def _llm_stage(self, rag_chain, question: str):
         """Stage 1: LLM streaming with sentence buffering."""
+        print(f"[{datetime.now()}] [Kyutai LLM] Stage start")
+        print(f"[{datetime.now()}] [Kyutai LLM] question={question!r}")
         try:
             async for token in streaming_rag_query(rag_chain, question):
                 if self._cancelled:
+                    print(f"[{datetime.now()}] [Kyutai LLM] Cancelled")
                     break
-                
+
+                if token:
+                    print(f"[{datetime.now()}] [Kyutai LLM] token_len={len(token)}")
                 sentences = self.sentence_buffer.add_token(token)
                 for sentence in sentences:
+                    print(f"[{datetime.now()}] [Kyutai LLM] enqueue_sentence idx={self._sentence_index} len={len(sentence)}")
                     await self.ws.send_json(
                         make_text_chunk_msg(
                             self._sentence_index, sentence, is_final=False
@@ -182,6 +192,7 @@ class KyutaiStreamCoordinator:
             if not self._cancelled:
                 remaining = self.sentence_buffer.flush()
                 if remaining:
+                    print(f"[{datetime.now()}] [Kyutai LLM] flush_remaining idx={self._sentence_index} len={len(remaining)}")
                     await self.ws.send_json(
                         make_text_chunk_msg(
                             self._sentence_index, remaining, is_final=True
@@ -192,8 +203,11 @@ class KyutaiStreamCoordinator:
         
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai LLM] ERROR: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             await self._handle_error("llm", e)
         finally:
+            print(f"[{datetime.now()}] [Kyutai LLM] Stage end")
             await self._sentence_queue.put(None)
     
     async def _tts_stage(self, voice_preset: Optional[str], tts_instruct: Optional[str]):
@@ -201,19 +215,32 @@ class KyutaiStreamCoordinator:
         sentence_idx = 0
         retry_count = 0
         max_retries = 2
+
+        print(f"[{datetime.now()}] [Kyutai TTS] Stage start")
+        print(
+            f"[{datetime.now()}] [Kyutai TTS] stream_sentence={hasattr(self.tts, 'stream_sentence')} "
+            f"process_sentence={hasattr(self.tts, 'process_sentence')}"
+        )
+        print(f"[{datetime.now()}] [Kyutai TTS] voice_clone_prompt_present={self._voice_clone_prompt is not None}")
         
         try:
             while True:
                 if self._cancelled:
+                    print(f"[{datetime.now()}] [Kyutai TTS] Cancelled")
                     break
                 
                 sentence = await self._sentence_queue.get()
                 if sentence is None:
+                    print(f"[{datetime.now()}] [Kyutai TTS] Got None sentence, finishing")
                     break
+
+                print(f"[{datetime.now()}] [Kyutai TTS] Got sentence_idx={sentence_idx} len={len(sentence)}")
 
                 # Inference streaming path (Base voice-clone)
                 if hasattr(self.tts, "stream_sentence"):
                     try:
+                        print(f"[{datetime.now()}] [Kyutai TTS] stream_sentence start idx={sentence_idx}")
+                        chunk_n = 0
                         async for audio_chunk in self.tts.stream_sentence(
                             sentence=sentence,
                             sentence_index=sentence_idx,
@@ -222,17 +249,24 @@ class KyutaiStreamCoordinator:
                         ):
                             if self._cancelled:
                                 break
+                            chunk_n += 1
+                            if chunk_n == 1:
+                                print(f"[{datetime.now()}] [Kyutai TTS] first_audio_chunk idx={sentence_idx}")
                             self._cumulative_audio_time += audio_chunk.duration
                             await self._audio_queue.put(audio_chunk)
+                        print(f"[{datetime.now()}] [Kyutai TTS] stream_sentence end idx={sentence_idx} chunks={chunk_n}")
                         sentence_idx += 1
                         continue
                     except Exception as e:
                         print(f"[{datetime.now()}] [Kyutai TTS] Streaming path failed, fallback: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 # Try to generate audio with retries
                 audio_chunk = None
                 for attempt in range(max_retries + 1):
                     try:
+                        print(f"[{datetime.now()}] [Kyutai TTS] process_sentence attempt {attempt + 1}/{max_retries + 1} idx={sentence_idx}")
                         audio_chunk = await self.tts.process_sentence(
                             sentence,
                             sentence_idx,
@@ -243,9 +277,12 @@ class KyutaiStreamCoordinator:
                         )
                         if audio_chunk:
                             retry_count = 0
+                            print(f"[{datetime.now()}] [Kyutai TTS] process_sentence success idx={sentence_idx}")
                             break
                     except Exception as e:
                         print(f"[{datetime.now()}] [Kyutai TTS] Attempt {attempt + 1} failed: {e}")
+                        import traceback
+                        traceback.print_exc()
                         if attempt < max_retries:
                             await asyncio.sleep(0.1 * (attempt + 1))
                 
@@ -255,6 +292,7 @@ class KyutaiStreamCoordinator:
                     self._error_count = 0
                 else:
                     # Generate silence chunk as fallback
+                    print(f"[{datetime.now()}] [Kyutai TTS] silence_fallback idx={sentence_idx}")
                     await self._generate_silence_chunk(sentence_idx)
                     self._error_count += 1
                 
@@ -262,8 +300,11 @@ class KyutaiStreamCoordinator:
         
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai TTS] ERROR: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             await self._handle_error("tts", e)
         finally:
+            print(f"[{datetime.now()}] [Kyutai TTS] Stage end")
             await self._audio_queue.put(None)
     
     async def _blendshape_stage(self, return_audio: bool):
@@ -509,6 +550,12 @@ class KyutaiStreamCoordinator:
                     is_final=False,
                 )
             )
+
+            if chunk_idx == 0 or chunk_idx % 20 == 0:
+                print(
+                    f"[{datetime.now()}] [Kyutai Audio] sent_chunk={chunk_idx} "
+                    f"bytes={len(seg_bytes)} sr={sr} sentence_index={audio_chunk.sentence_index}"
+                )
 
             chunk_idx += 1
             sample_cursor = end
