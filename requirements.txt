@@ -1,6 +1,5 @@
 requests
 numpy
-torch
 gunicorn
 fastapi
 uvicorn

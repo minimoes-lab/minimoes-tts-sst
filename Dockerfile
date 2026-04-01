@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
     libsndfile1 \
+    sox \
+    libsox-fmt-all \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,6 +30,7 @@ COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
 RUN pip install --upgrade pip \
+    && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir qwen-tts
 
