@@ -9,7 +9,7 @@ config = {
     'input_dim': 256,
     'frame_size': 128,
     'use_half_precision': False,
-    'blendshape_divisor': 100.0,
+    'blendshape_divisor': 65.0,
     'clamp_blendshapes': True,
 }
 
