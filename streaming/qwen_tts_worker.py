@@ -183,8 +183,8 @@ class QwenTTSWorker:
         cumulative_time: float,
         language: str = "English",
         voice_clone_prompt=None,
-        emit_every_frames: int = 4,
-        decode_window_frames: int = 80,
+        emit_every_frames: int = 2,  # Réduit de 4 à 2 pour chunks plus fréquents
+        decode_window_frames: int = 40,  # Réduit de 80 à 40 pour latence initiale plus basse
         overlap_samples: int = 0,
     ) -> AsyncGenerator[AudioChunk, None]:
         """Stream PCM chunks for one sentence using Base model voice-clone streaming."""
@@ -197,7 +197,13 @@ class QwenTTSWorker:
         if prompt is None:
             raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
 
+        print(f"[{datetime.now()}] [Qwen TTS stream] Starting stream_generate_voice_clone for sentence {sentence_index}")
+        print(f"[{datetime.now()}] [Qwen TTS stream] emit_every_frames={emit_every_frames}, decode_window_frames={decode_window_frames}")
+        
         t_cursor = float(cumulative_time)
+        chunk_count = 0
+        start_time = time.time()
+        
         for chunk, sr in self.model.stream_generate_voice_clone(
             text=sentence,
             language=language,
@@ -212,6 +218,12 @@ class QwenTTSWorker:
                 chunk = chunk.cpu().numpy()
             chunk = chunk.astype(np.float32)
             dur = float(len(chunk) / sr) if sr else 0.0
+            
+            chunk_count += 1
+            if chunk_count == 1:
+                elapsed = time.time() - start_time
+                print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {elapsed:.2f}s")
+            
             yield AudioChunk(
                 sentence_index=sentence_index,
                 audio_bytes=b"",
@@ -221,6 +233,9 @@ class QwenTTSWorker:
                 duration=dur,
             )
             t_cursor += dur
+        
+        total_elapsed = time.time() - start_time
+        print(f"[{datetime.now()}] [Qwen TTS stream] Completed {chunk_count} chunks in {total_elapsed:.2f}s")
 
     async def process_sentence(
         self,
