@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from utils.config import get_blendshape_names
+from utils.config import config, get_blendshape_names
 
 
 def make_audio_chunk_msg(
@@ -40,13 +40,15 @@ def _raw_frames_to_named(
     frame_rate: int,
 ) -> List[dict]:
     """Convert raw frame arrays into per-frame dicts with names + timestamps."""
+    clamp = bool(config.get("clamp_blendshapes", True))
     names = get_blendshape_names()
     result = []
     for i, frame in enumerate(raw_frames):
         result.append({
             "timestamp": round(chunk_start_time + i / frame_rate, 6),
             "blendshapes": {
-                names[j]: round(float(v), 6) for j, v in enumerate(frame)
+                names[j]: round(max(0.0, min(1.0, float(v))), 6) if clamp else round(float(v), 6)
+                for j, v in enumerate(frame)
             },
         })
     return result
