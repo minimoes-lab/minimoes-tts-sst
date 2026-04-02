@@ -172,7 +172,7 @@ def reduce_features(features):
 
 
 
-def extract_overlapping_autocorr(y, sr, frame_length, hop_length, num_autocorr_coeff=187, pad_signal=True, padding_mode="reflect", trim_padded=False):
+def extract_overlapping_autocorr(y, sr, frame_length, hop_length, num_autocorr_coeff=183, pad_signal=True, padding_mode="reflect", trim_padded=False):
     if pad_signal:
         pad = frame_length // 2
         y_padded = np.pad(y, pad_width=pad, mode=padding_mode)
