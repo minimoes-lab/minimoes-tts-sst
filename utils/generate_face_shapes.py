@@ -19,4 +19,3 @@ def generate_facial_data_from_bytes(audio_bytes, model, device, config):
     final_decoded_outputs = process_audio_features(audio_features, model, device, config)
 
     return final_decoded_outputs
-

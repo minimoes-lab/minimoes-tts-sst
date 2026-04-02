@@ -96,7 +96,7 @@ def blend_chunks(chunk1, chunk2, overlap):
         
     return np.vstack((blended_chunk, chunk2[actual_overlap:]))
 
-def process_audio_features(audio_features, model, device, config, apply_easing=True):
+def process_audio_features(audio_features, model, device, config):
     # Configuration settings
     frame_length = config['frame_size']  # Number of frames per chunk (e.g., 64)
     overlap = config.get('overlap', 32)  # Number of overlapping frames between chunks
@@ -146,32 +146,21 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
 
     # Normalize or apply any post-processing
     final_decoded_outputs = ensure_2d(final_decoded_outputs)
-    blendshape_divisor = float(config.get('blendshape_divisor', 100.0))
-    if blendshape_divisor != 0:
-        final_decoded_outputs[:, :61] /= blendshape_divisor  # Normalize specific columns
+    final_decoded_outputs[:, :61] /= 100  # Normalize specific columns
 
-    # Easing effect for smooth start (fades in first 0.05 seconds)
-    # REDUCED from 0.1s to 0.05s for more dynamic initial response
-    if apply_easing:
-        ease_duration_frames = min(int(0.05 * 60), final_decoded_outputs.shape[0])
-        easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
-        final_decoded_outputs[:ease_duration_frames] *= easing_factors
+    # Easing effect for smooth start (fades in first 0.2 seconds)
+    ease_duration_frames = min(int(0.1 * 60), final_decoded_outputs.shape[0])
+    easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
+    final_decoded_outputs[:ease_duration_frames] *= easing_factors
 
     # Zero out unnecessary columns (optional post-processing)
     final_decoded_outputs = zero_columns(final_decoded_outputs)
-    
-    # Clamp blendshape values to [0, 1] if enabled
-    from utils.config import config
-    if config.get('clamp_blendshapes', False):
-        final_decoded_outputs = np.clip(final_decoded_outputs, 0.0, 1.0)
 
     return final_decoded_outputs
 
 
 def zero_columns(data):
-    # OPTIMIZATION: Reduced from 18 to 8 columns to preserve more facial expressions
-    # Based on ARKit blendshapes - keeping eyeBlink (0,7) active for natural blinking
-    columns_to_zero = [1, 2, 3, 4, 8, 9, 10, 11]
+    columns_to_zero = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
     modified_data = np.copy(data) 
     modified_data[:, columns_to_zero] = 0
     return modified_data

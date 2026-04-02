@@ -1,24 +1,11 @@
 # This software is licensed under a **dual-license model**
 # For individuals and businesses earning **under $1M per year**, this software is licensed under the **MIT License**
 # Businesses or organizations with **annual revenue of $1,000,000 or more** must obtain permission to use this software commercially.
-import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 2. Join the directory with the filename
-model_path = "utils/model/model.pth"
-
-
-print(f"DEBUG: Looking for model at absolute path: {model_path}")
-
-# 3. Check if it exists and list files if it doesn't
-if not os.path.exists(model_path):
-    print(f"❌ ERROR: File not found at {model_path}")
-    print(f"DEBUG: Contents of this folder: {os.listdir(BASE_DIR)}")
-    raise FileNotFoundError(f"Missing file: {model_path}")
 def load_model(model_path, config, device):
     device = torch.device(device)
     
@@ -42,15 +29,8 @@ def load_model(model_path, config, device):
     decoder = Decoder(config['output_dim'], hidden_dim, n_layers, num_heads)
     model = Seq2Seq(encoder, decoder, device).to(device)
 
-    state_dict = torch.load(model_path, map_location=device, weights_only=False)
-    
-    # DEBUG: Verify model input dimension
-    print(f"[Model] Config input_dim: {config['input_dim']}")
-    print(f"[Model] Encoder embedding shape: {state_dict['encoder.embedding.weight'].shape}")
-    print(f"[Model] Model expects: {state_dict['encoder.embedding.weight'].shape[1]} features")
-    
+    state_dict = torch.load(model_path, map_location=device)
     model.load_state_dict(state_dict, strict=True)
-
 
     # Convert the model to half precision if applicable
     if use_half_precision and device.type == 'cuda':
@@ -273,4 +253,3 @@ class Decoder(nn.Module):
         if self.layer_norm:
             x = self.layer_norm(x)
         return self.fc_output(x)
-
