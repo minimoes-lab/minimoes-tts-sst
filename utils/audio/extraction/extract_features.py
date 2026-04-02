@@ -136,6 +136,11 @@ def extract_energy_features(y, sr, frame_length, hop_length):
     except Exception as e:
         print(f"[extract_energy_features] Error: {e}")
         return None
+def cepstral_mean_variance_normalization(mfcc):
+    """
+    Cepstral Mean and Variance Normalization (CMVN).
+    Normalize MFCC coefficients by their mean and standard deviation.
+    """
     mean = np.mean(mfcc, axis=1, keepdims=True)
     std = np.std(mfcc, axis=1, keepdims=True)
     return (mfcc - mean) / (std + 1e-10)

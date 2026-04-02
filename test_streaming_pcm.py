@@ -99,7 +99,7 @@ async def main():
     chunk_ms = int(os.environ.get("CHUNK_MS", "50"))
     play_live = os.environ.get("PLAY_LIVE", "1") not in ("0", "false", "False")
     play_file = os.environ.get("PLAY_FILE", "0") in ("1", "true", "True")
-    jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "3"))
+    jitter_chunks = int(os.environ.get("JITTER_CHUNKS", "1"))
     list_devices = os.environ.get("LIST_DEVICES", "0") in ("1", "true", "True")
     output_device = os.environ.get("OUTPUT_DEVICE")
 
