@@ -14,7 +14,7 @@ config = {
 
     'output_dim': 68, # if you trained your own, this should also be 61
 
-    'input_dim': 256,
+    'input_dim': 260,  # Updated to match actual feature extraction (MFCC 69 + F0 2 + Energy 2 + Autocorr 187)
 
     'frame_size': 128,
 
