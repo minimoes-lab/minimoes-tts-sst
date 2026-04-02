@@ -146,10 +146,19 @@ def process_audio_features(audio_features, model, device, config):
 
     # Normalize or apply any post-processing
     final_decoded_outputs = ensure_2d(final_decoded_outputs)
-    final_decoded_outputs[:, :61] /= 100  # Normalize specific columns
+    
+    # Get blendshape_divisor from config (default 65.0)
+    blendshape_divisor = float(config.get('blendshape_divisor', 65.0))
+    if blendshape_divisor > 0:
+        final_decoded_outputs[:, :61] /= blendshape_divisor
+    
+    # Clamp blendshape values to [0, 1] for ARKit compatibility
+    clamp = bool(config.get('clamp_blendshapes', True))
+    if clamp:
+        final_decoded_outputs = np.clip(final_decoded_outputs, 0.0, 1.0)
 
-    # Easing effect for smooth start (fades in first 0.2 seconds)
-    ease_duration_frames = min(int(0.1 * 60), final_decoded_outputs.shape[0])
+    # Easing effect for smooth start (fades in first 0.05 seconds)
+    ease_duration_frames = min(int(0.05 * 60), final_decoded_outputs.shape[0])
     easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
     final_decoded_outputs[:ease_duration_frames] *= easing_factors
 
