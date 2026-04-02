@@ -78,12 +78,13 @@ def extract_and_combine_features(y, sr, frame_length, hop_length, include_autoco
         )
         all_features.append(autocorr_features)
     
-    # 5. Zero Crossing Rate - adds 1 dimension to reach 256 total features
-    zcr_features = extract_zcr_features(y, sr, frame_length, hop_length)
-    if zcr_features is not None:
-        all_features.append(zcr_features)
-    
     combined_features = np.hstack(all_features)
+    
+    # DEBUG: Detailed feature breakdown
+    print(f"[Features] MFCC: {mfcc_features.shape[1]}, F0: {f0_features.shape[1] if f0_features is not None else 0}, "
+          f"Energy: {energy_features.shape[1] if energy_features is not None else 0}, "
+          f"Autocorr: {autocorr_features.shape[1] if include_autocorr else 0}, "
+          f"TOTAL: {combined_features.shape[1]}")
 
     return combined_features
 
