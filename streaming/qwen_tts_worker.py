@@ -119,7 +119,7 @@ class QwenTTSWorker:
                             compile_codebook_predictor=True,
                             compile_talker=True,
                         )
-                        print(f"[{datetime.now()}] [Qwen TTS] Streaming optimizations enabled (6x faster)")
+                        print(f"[{datetime.now()}] [Qwen TTS] Two-phase streaming optimizations enabled")
                     else:
                         print(f"[{datetime.now()}] [Qwen TTS] Warning: enable_streaming_optimizations not available")
                 except Exception as opt_err:
@@ -183,9 +183,12 @@ class QwenTTSWorker:
         cumulative_time: float,
         language: str = "English",
         voice_clone_prompt=None,
-        emit_every_frames: int = 2,  # Réduit de 4 à 2 pour chunks plus fréquents
-        decode_window_frames: int = 40,  # Réduit de 80 à 40 pour latence initiale plus basse
-        overlap_samples: int = 0,
+        emit_every_frames: int = 12,
+        decode_window_frames: int = 80,
+        overlap_samples: int = 128,
+        first_chunk_emit_every: int = 5,
+        first_chunk_decode_window: int = 48,
+        first_chunk_frames: int = 48,
     ) -> AsyncGenerator[AudioChunk, None]:
         """Stream PCM chunks for one sentence using Base model voice-clone streaming."""
         if self._cancelled:
@@ -198,7 +201,8 @@ class QwenTTSWorker:
             raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
 
         print(f"[{datetime.now()}] [Qwen TTS stream] Starting stream_generate_voice_clone for sentence {sentence_index}")
-        print(f"[{datetime.now()}] [Qwen TTS stream] emit_every_frames={emit_every_frames}, decode_window_frames={decode_window_frames}")
+        print(f"[{datetime.now()}] [Qwen TTS stream] Phase 1: first_chunk_emit_every={first_chunk_emit_every}, first_chunk_decode_window={first_chunk_decode_window}")
+        print(f"[{datetime.now()}] [Qwen TTS stream] Phase 2: emit_every_frames={emit_every_frames}, decode_window_frames={decode_window_frames}")
         
         t_cursor = float(cumulative_time)
         chunk_count = 0
@@ -211,6 +215,9 @@ class QwenTTSWorker:
             emit_every_frames=emit_every_frames,
             decode_window_frames=decode_window_frames,
             overlap_samples=overlap_samples,
+            first_chunk_emit_every=first_chunk_emit_every,
+            first_chunk_decode_window=first_chunk_decode_window,
+            first_chunk_frames=first_chunk_frames,
         ):
             if self._cancelled:
                 break
