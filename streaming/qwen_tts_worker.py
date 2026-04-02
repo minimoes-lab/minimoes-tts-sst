@@ -14,32 +14,6 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 import torch
 
-# PEP 318 FIX: Monkey-patch broken decorator in rekuenkdr fork before importing qwen_tts
-try:
-    import sys
-    import types
-    import functools
-    
-    # Create a mock module with the fixed decorator
-    mock_module = types.ModuleType('mock_modeling')
-    
-    def fixed_check_model_inputs(**kwargs):
-        """PEP 318 compliant factory decorator."""
-        def decorator(func):
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs_inner):
-                return func(*args, **kwargs_inner)
-            return wrapper
-        return decorator
-    
-    mock_module.check_model_inputs = fixed_check_model_inputs
-    
-    # Pre-populate the import cache to intercept the broken decorator
-    sys.modules['qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2'] = mock_module
-    
-except Exception:
-    pass  # If patching fails, continue anyway
-
 
 @dataclass
 class AudioChunk:
