@@ -68,9 +68,8 @@ RUN pip install --upgrade pip \
 
     && pip install --no-cache-dir qwen-tts
 
-# PEP 318 FIX: Patch check_model_inputs decorator in rekuenkdr fork
-COPY docker_patch_qwen.py /tmp/
-RUN python3 /tmp/docker_patch_qwen.py && rm /tmp/docker_patch_qwen.py
+# PEP 318 FIX: Replace @check_model_inputs() with @check_model_inputs in rekuenkdr fork
+RUN sed -i 's/@check_model_inputs()/@check_model_inputs/g' /usr/local/lib/python3.10/site-packages/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py || echo "[PATCH] File not found, may need manual fix"
 
 
 
