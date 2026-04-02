@@ -113,9 +113,16 @@ async def tts_warmup():
             use_qwen3=True,
             reference_audio_path=None,
             reference_text=None,
+            raise_on_error=True,
         )
 
     worker = await loop.run_in_executor(None, _build_model_worker)
+    
+    # VÉRIFICATION: Le modèle est-il réellement chargé?
+    if not worker.model_loaded:
+        print(f"[{datetime.now()}] [Warmup] ERROR: Qwen3-TTS model failed to load (fallback active)")
+        return {"status": "error", "warmed": False, "error": "Model failed to load, check logs"}
+    
     with _tts_worker_lock:
         _tts_model_worker = worker
 

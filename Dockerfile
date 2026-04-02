@@ -66,10 +66,8 @@ RUN pip install --upgrade pip \
 
     && pip install --no-cache-dir -r requirements.txt \
 
-    && pip install --no-cache-dir qwen-tts
-
-# PEP 318 FIX: Replace @check_model_inputs() with @check_model_inputs in rekuenkdr fork
-RUN sed -i 's/@check_model_inputs()/@check_model_inputs/g' /usr/local/lib/python3.10/site-packages/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py || echo "[PATCH] File not found, may need manual fix"
+    && pip install --no-cache-dir qwen-tts \
+    && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2"
 
 
 

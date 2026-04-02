@@ -61,7 +61,7 @@ class QwenTTSWorker:
     _shared_loaded_device = None
     _shared_model_loaded = False
     
-    def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None, reference_text: Optional[str] = None):
+    def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None, reference_text: Optional[str] = None, raise_on_error: bool = False):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.model = None
         self.tokenizer = None
@@ -74,7 +74,7 @@ class QwenTTSWorker:
         self.default_speaker = None
         self.reference_audio_path = reference_audio_path
         self.reference_text: Optional[str] = reference_text
-        self.voice_clone_prompt = None
+        self.raise_on_error = raise_on_error
         self._load_model()
     
     def _load_model(self):
@@ -190,12 +190,14 @@ class QwenTTSWorker:
             
         except Exception as e:
             print(f"[{datetime.now()}] [Qwen TTS] Failed to load model: {e}")
-            print(f"[{datetime.now()}] [Qwen TTS] Using fallback synthesis")
             import traceback
             traceback.print_exc()
             self.model = None
             self.model_loaded = False
             self.sr = 24000  # Fallback uses 24kHz
+            if self.raise_on_error:
+                raise RuntimeError(f"Qwen3-TTS model failed to load: {e}") from e
+            print(f"[{datetime.now()}] [Qwen TTS] Using fallback synthesis")
 
     def create_voice_clone_prompt(self, ref_audio_path: str, ref_text: str):
         if self.model is None or not self.model_loaded:
