@@ -34,10 +34,25 @@ def extract_audio_features(audio_input, sr=88200, from_bytes=False):
     return combined_features, y
 
 def extract_and_combine_features(y, sr, frame_length, hop_length, include_autocorr=True):
-   
+    """
+    Extract comprehensive audio features for facial animation.
+    Based on VOCASET/UniTalker research: MFCC + F0 + energy for dynamic expressions.
+    """
     all_features = []
+    
+    # 1. MFCC features (standard for speech)
     mfcc_features = extract_mfcc_features(y, sr, frame_length, hop_length)
     all_features.append(mfcc_features)
+
+    # 2. F0 (fundamental frequency) - adds prosody and emotional dynamics
+    f0_features = extract_f0_features(y, sr, frame_length, hop_length)
+    if f0_features is not None:
+        all_features.append(f0_features)
+    
+    # 3. Energy features - for amplitude/intensity of movements
+    energy_features = extract_energy_features(y, sr, frame_length, hop_length)
+    if energy_features is not None:
+        all_features.append(energy_features)
 
     if include_autocorr:
         autocorr_features = extract_autocorrelation_features(
@@ -55,7 +70,72 @@ def extract_mfcc_features(y, sr, frame_length, hop_length, num_mfcc=23):
     reduced_mfcc_features = reduce_features(mfcc_features)
     return reduced_mfcc_features.T
 
-def cepstral_mean_variance_normalization(mfcc):
+def extract_f0_features(y, sr, frame_length, hop_length):
+    """
+    Extract fundamental frequency (F0) for prosody and emotional dynamics.
+    Based on VOCASET research: F0 correlates with facial expression intensity.
+    """
+    try:
+        # Use librosa.pyin for robust F0 estimation
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            y, 
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7'),
+            frame_length=frame_length,
+            hop_length=hop_length
+        )
+        
+        # Replace NaN with 0 for unvoiced regions
+        f0 = np.nan_to_num(f0, nan=0.0)
+        
+        # Get number of frames from MFCC to match dimensions
+        mfcc_dummy = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=1, 
+                                           n_fft=frame_length, hop_length=hop_length)
+        target_frames = mfcc_dummy.shape[1]
+        
+        # Ensure F0 has same number of frames
+        if len(f0) < target_frames:
+            # Pad if needed
+            f0 = np.pad(f0, (0, target_frames - len(f0)), mode='edge')
+        elif len(f0) > target_frames:
+            # Trim if needed
+            f0 = f0[:target_frames]
+        
+        # Add voiced flag as additional feature
+        voiced_flag = voiced_flag.astype(float)
+        if len(voiced_flag) < target_frames:
+            voiced_flag = np.pad(voiced_flag, (0, target_frames - len(voiced_flag)), mode='edge')
+        elif len(voiced_flag) > target_frames:
+            voiced_flag = voiced_flag[:target_frames]
+        
+        # Stack F0 and voiced flag
+        f0_features = np.vstack([f0.reshape(1, -1), voiced_flag.reshape(1, -1)])
+        
+        return f0_features.T  # Return shape: (frames, 2)
+    except Exception as e:
+        print(f"[extract_f0_features] Error: {e}")
+        return None
+
+
+def extract_energy_features(y, sr, frame_length, hop_length):
+    """
+    Extract RMS energy for amplitude/intensity of facial movements.
+    High energy = more intense expressions.
+    """
+    try:
+        # Calculate RMS energy
+        rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)
+        
+        # Add delta for energy changes
+        delta_rms = librosa.feature.delta(rms)
+        
+        # Stack original and delta
+        energy_features = np.vstack([rms, delta_rms])
+        
+        return energy_features.T  # Return shape: (frames, 2)
+    except Exception as e:
+        print(f"[extract_energy_features] Error: {e}")
+        return None
     mean = np.mean(mfcc, axis=1, keepdims=True)
     std = np.std(mfcc, axis=1, keepdims=True)
     return (mfcc - mean) / (std + 1e-10)
@@ -76,17 +156,14 @@ def extract_overlapping_mfcc(chunk, sr, num_mfcc, frame_length, hop_length, incl
 
 
 def reduce_features(features):
-    num_frames = features.shape[1]
-    paired_frames = features[:, :num_frames // 2 * 2].reshape(features.shape[0], -1, 2)
-    reduced_frames = paired_frames.mean(axis=2)
-    
-    if num_frames % 2 == 1:
-        last_frame = features[:, -1].reshape(-1, 1)
-        reduced_final_features = np.hstack((reduced_frames, last_frame))
-    else:
-        reduced_final_features = reduced_frames
-    
-    return reduced_final_features
+    """
+    VOCASET-style: Preserve full temporal resolution.
+    Previous version averaged pairs of frames, causing loss of dynamic movements.
+    Now returns features as-is to maintain high-resolution for facial animation.
+    """
+    # OPTIMIZATION: Removed frame averaging to preserve full temporal resolution
+    # This maintains the 60 FPS output without reduction
+    return features
 
 
 

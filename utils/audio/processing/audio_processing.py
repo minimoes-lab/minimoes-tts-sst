@@ -150,10 +150,10 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
     if blendshape_divisor != 0:
         final_decoded_outputs[:, :61] /= blendshape_divisor  # Normalize specific columns
 
-    # Easing effect for smooth start (fades in first 0.2 seconds)
-    # In streaming mode, only apply to the first sentence chunk
+    # Easing effect for smooth start (fades in first 0.05 seconds)
+    # REDUCED from 0.1s to 0.05s for more dynamic initial response
     if apply_easing:
-        ease_duration_frames = min(int(0.1 * 60), final_decoded_outputs.shape[0])
+        ease_duration_frames = min(int(0.05 * 60), final_decoded_outputs.shape[0])
         easing_factors = np.linspace(0, 1, ease_duration_frames)[:, None]
         final_decoded_outputs[:ease_duration_frames] *= easing_factors
 
@@ -164,7 +164,9 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
 
 
 def zero_columns(data):
-    columns_to_zero = [1, 2, 3, 4, 8, 9, 10, 11, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
+    # OPTIMIZATION: Reduced from 18 to 8 columns to preserve more facial expressions
+    # Based on ARKit blendshapes - keeping eyeBlink (0,7) active for natural blinking
+    columns_to_zero = [1, 2, 3, 4, 8, 9, 10, 11]
     modified_data = np.copy(data) 
     modified_data[:, columns_to_zero] = 0
     return modified_data
