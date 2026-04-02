@@ -43,6 +43,12 @@ def load_model(model_path, config, device):
     model = Seq2Seq(encoder, decoder, device).to(device)
 
     state_dict = torch.load(model_path, map_location=device, weights_only=False)
+    
+    # DEBUG: Verify model input dimension
+    print(f"[Model] Config input_dim: {config['input_dim']}")
+    print(f"[Model] Encoder embedding shape: {state_dict['encoder.embedding.weight'].shape}")
+    print(f"[Model] Model expects: {state_dict['encoder.embedding.weight'].shape[1]} features")
+    
     model.load_state_dict(state_dict, strict=True)
 
 

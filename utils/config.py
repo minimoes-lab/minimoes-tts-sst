@@ -20,9 +20,9 @@ config = {
 
     'use_half_precision': False,
 
-    'blendshape_divisor': 10.0,
+    'blendshape_divisor': 1.0,
 
-    'clamp_blendshapes': False,
+    'clamp_blendshapes': True,
 
 }
 

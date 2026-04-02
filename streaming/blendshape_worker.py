@@ -58,6 +58,14 @@ class BlendshapeWorker:
                 )
                 return None
 
+            # DEBUG: Verify feature dimensions match model input
+            expected_dim = self.config.get('input_dim', 256)
+            actual_dim = audio_features.shape[1] if len(audio_features.shape) > 1 else audio_features.shape[0]
+            print(f"[{datetime.now()}] [BS Worker] Features: {actual_dim}D (expected: {expected_dim}D)")
+            
+            if actual_dim != expected_dim:
+                print(f"⚠️  DIMENSION MISMATCH! Model expects {expected_dim}, got {actual_dim}")
+
             # Step 2: Run blendshape inference
             # Only apply easing fade-in on the very first chunk
             bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 800) or 800)

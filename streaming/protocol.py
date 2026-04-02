@@ -80,7 +80,11 @@ def _raw_frames_to_named(
 
 ) -> List[dict]:
 
-    """Convert raw frame arrays into per-frame dicts with names + timestamps."""
+    """Convert raw frame arrays into per-frame dicts with names + timestamps.
+    
+    ARKit blendshapes must have values in [0, 1] range.
+    Values outside this range will cause mesh deformation.
+    """
 
     names = get_blendshape_names()
 
@@ -88,13 +92,16 @@ def _raw_frames_to_named(
 
     for i, frame in enumerate(raw_frames):
 
+        # Clamp values to [0, 1] for ARKit compatibility
+        clamped_values = [max(0.0, min(1.0, float(v))) for v in frame]
+
         result.append({
 
             "timestamp": round(chunk_start_time + i / frame_rate, 6),
 
             "blendshapes": {
 
-                names[j]: round(float(v), 6) for j, v in enumerate(frame)
+                names[j]: round(clamped_values[j], 6) for j in range(len(names))
 
             },
 

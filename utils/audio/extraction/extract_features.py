@@ -33,6 +33,23 @@ def extract_audio_features(audio_input, sr=88200, from_bytes=False):
     
     return combined_features, y
 
+def extract_zcr_features(y, sr, frame_length, hop_length):
+    """
+    Extract Zero Crossing Rate - measures signal noisiness vs periodicity.
+    Adds 1 dimension to match model's expected 256 input features.
+    """
+    try:
+        zcr = librosa.feature.zero_crossing_rate(
+            y, 
+            frame_length=frame_length, 
+            hop_length=hop_length
+        )
+        return zcr.T  # Return shape: (frames, 1)
+    except Exception as e:
+        print(f"[extract_zcr_features] Error: {e}")
+        return None
+
+
 def extract_and_combine_features(y, sr, frame_length, hop_length, include_autocorr=True):
     """
     Extract comprehensive audio features for facial animation.
@@ -54,11 +71,17 @@ def extract_and_combine_features(y, sr, frame_length, hop_length, include_autoco
     if energy_features is not None:
         all_features.append(energy_features)
 
+    # 4. Autocorrelation features - for pitch/periodicity
     if include_autocorr:
         autocorr_features = extract_autocorrelation_features(
             y, sr, frame_length, hop_length
         )
         all_features.append(autocorr_features)
+    
+    # 5. Zero Crossing Rate - adds 1 dimension to reach 256 total features
+    zcr_features = extract_zcr_features(y, sr, frame_length, hop_length)
+    if zcr_features is not None:
+        all_features.append(zcr_features)
     
     combined_features = np.hstack(all_features)
 
@@ -136,12 +159,27 @@ def extract_energy_features(y, sr, frame_length, hop_length):
     except Exception as e:
         print(f"[extract_energy_features] Error: {e}")
         return None
-def cepstral_mean_variance_normalization(mfcc):
+def cepstral_mean_variance_normalization(mfcc, mean_only=False, preserve_energy_coeff=True):
     """
     Cepstral Mean and Variance Normalization (CMVN).
-    Normalize MFCC coefficients by their mean and standard deviation.
+    
+    Args:
+        mean_only: If True, only remove mean (preserve variance/energy)
+        preserve_energy_coeff: If True, don't normalize first MFCC coefficient (energy)
     """
     mean = np.mean(mfcc, axis=1, keepdims=True)
+    
+    if preserve_energy_coeff:
+        # Keep first coefficient (approximates energy) unnormalized
+        mfcc_normalized = mfcc.copy()
+        mfcc_normalized[1:, :] = (mfcc[1:, :] - mean[1:, :]) / (np.std(mfcc[1:, :], axis=1, keepdims=True) + 1e-10)
+        return mfcc_normalized
+    
+    if mean_only:
+        # Mean subtraction only - preserves variance structure
+        return mfcc - mean
+    
+    # Full CMVN (original behavior)
     std = np.std(mfcc, axis=1, keepdims=True)
     return (mfcc - mean) / (std + 1e-10)
 
@@ -290,6 +328,7 @@ def load_audio_file_from_memory(audio_bytes, sr=88200):
 def load_pcm_audio_from_bytes(audio_bytes, sr=22050, channels=1, sample_width=2):
     """
     Load raw PCM bytes into a normalized numpy array and upsample to 88200 Hz.
+    Uses librosa.resample for better quality than scipy.signal.resample.
     Assumes little-endian, 16-bit PCM data.
     """
     # Determine the appropriate numpy dtype.
@@ -312,16 +351,19 @@ def load_pcm_audio_from_bytes(audio_bytes, sr=22050, channels=1, sample_width=2)
     # Upsample the audio from the current sample rate to 88200 Hz.
     target_sr = 88200
     if sr != target_sr:
-        # Calculate the number of samples in the resampled signal.
-        num_samples = int(len(y) * target_sr / sr)
+        # Use librosa.resample for better quality (kaiser_best window)
         if channels > 1:
-            # Resample each channel separately.
-            y_resampled = np.zeros((num_samples, channels), dtype=np.float32)
+            y_resampled = np.zeros((int(len(y) * target_sr / sr), channels), dtype=np.float32)
             for ch in range(channels):
-                y_resampled[:, ch] = scipy.signal.resample(y[:, ch], num_samples)
+                y_resampled[:, ch] = librosa.resample(
+                    y[:, ch], 
+                    orig_sr=sr, 
+                    target_sr=target_sr,
+                    res_type='kaiser_best'  # High quality resampling
+                )
+            y = y_resampled
         else:
-            y_resampled = scipy.signal.resample(y, num_samples)
-        y = y_resampled
+            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr, res_type='kaiser_best')
         sr = target_sr
 
     return y

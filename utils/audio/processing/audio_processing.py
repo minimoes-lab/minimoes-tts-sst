@@ -159,6 +159,11 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
 
     # Zero out unnecessary columns (optional post-processing)
     final_decoded_outputs = zero_columns(final_decoded_outputs)
+    
+    # Clamp blendshape values to [0, 1] if enabled
+    from ..config import config
+    if config.get('clamp_blendshapes', False):
+        final_decoded_outputs = np.clip(final_decoded_outputs, 0.0, 1.0)
 
     return final_decoded_outputs
 
