@@ -315,7 +315,8 @@ class KyutaiStreamCoordinator:
         bs_chunk_idx = 0
         
         # Blendshape buffering: accumulate PCM until minimum duration for stable feature extraction
-        bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 200) or 200)
+        # OPTIMIZATION: 800ms window based on KeyFace/SyncAnimation research for temporal coherence
+        bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 800) or 800)
         bs_min_samples = max(1, int((self.tts.sr or 24000) * (bs_min_chunk_ms / 1000.0)))
         
         bs_buf_audio: List[np.ndarray] = []

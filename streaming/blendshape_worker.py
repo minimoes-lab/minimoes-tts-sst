@@ -7,7 +7,7 @@ import numpy as np
 
 from streaming.qwen_tts_worker import AudioChunk
 
-BLEND_FRAMES = 8  # frames to blend at sentence boundaries
+BLEND_FRAMES = 16  # Increased from 8 to 16 frames for smoother temporal transitions (KeyFace method)
 
 
 @dataclass
@@ -60,6 +60,8 @@ class BlendshapeWorker:
 
             # Step 2: Run blendshape inference
             # Only apply easing fade-in on the very first chunk
+            bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 800) or 800)
+            bs_min_samples = max(1, int((self.tts.sr or 24000) * (bs_min_chunk_ms / 1000.0)))
             blendshapes = process_audio_features(
                 audio_features,
                 self.model,
