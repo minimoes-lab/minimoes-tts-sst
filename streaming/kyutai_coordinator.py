@@ -311,6 +311,8 @@ class KyutaiStreamCoordinator:
         """Stage 3: Blendshape generation with delayed stream sync."""
         from streaming.qwen_tts_worker import AudioChunk
         
+        print(f"[{datetime.now()}] [Kyutai BS] Stage start")
+        
         audio_chunk_idx = 0
         bs_chunk_idx = 0
         
@@ -401,11 +403,13 @@ class KyutaiStreamCoordinator:
             bs_buf_sample_rate = None
         
         try:
+            print(f"[{datetime.now()}] [Kyutai BS] Entering main loop, waiting for audio chunks...")
             while True:
                 if self._cancelled:
                     break
                 
                 audio_chunk = await self._audio_queue.get()
+                print(f"[{datetime.now()}] [Kyutai BS] Got audio_chunk from queue: {audio_chunk is not None}")
                 if audio_chunk is None:
                     break
                 
@@ -453,6 +457,8 @@ class KyutaiStreamCoordinator:
                     print(f"[{datetime.now()}] [Kyutai BS] Buffer error: {e}")
                     await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
                     bs_chunk_idx += 1
+            
+            print(f"[{datetime.now()}] [Kyutai BS] Exiting main loop (cancelled={self._cancelled})")
             
             # Flush any remaining buffered audio
             try:
@@ -510,7 +516,11 @@ class KyutaiStreamCoordinator:
         
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai BS] ERROR: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             await self._handle_error("blendshape", e)
+        finally:
+            print(f"[{datetime.now()}] [Kyutai BS] Stage end")
 
     async def _send_audio_pcm16(self, chunk_idx: int, audio_chunk) -> int:
         """Emit PCM16 little-endian chunks over WS for real-time playback."""
