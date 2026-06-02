@@ -36,6 +36,7 @@ import pandas as pd
 from docx import Document
 from pptx import Presentation
 import zipfile
+import xml.etree.ElementTree as ET
 from PyPDF2 import PdfReader
 import scipy.io.wavfile as wavfile
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -337,7 +338,31 @@ class QueryResponse(BaseModel):
     audio_base64: Optional[str] = Field(None, description="Base64 encoded audio content.")
 
 # =====================================================================================
-# 5. Helper Functions for Document and Web Parsing
+# 5. URL Validation (SSRF Protection)
+# =====================================================================================
+import urllib.parse
+
+_BLOCKED_HOSTS = {'localhost', '127.0.0.1', '0.0.0.0', '::1'}
+_BLOCKED_PREFIXES = ('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '169.254.', 'fc', 'fd', 'fe80::')
+_MAX_URLS = 50
+
+def is_valid_public_url(url: str) -> bool:
+    """Block private IPs and localhost to prevent SSRF."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or '').lower()
+        if not hostname:
+            return False
+        if hostname in _BLOCKED_HOSTS:
+            return False
+        if hostname.startswith(_BLOCKED_PREFIXES):
+            return False
+        return True
+    except Exception:
+        return False
+
+# =====================================================================================
+# 6. Helper Functions for Document and Web Parsing
 # =====================================================================================
 
 class ContentExtractor:
@@ -345,7 +370,7 @@ class ContentExtractor:
     def from_url(self, url: str) -> str:
         try:
             print(f"[{datetime.now()}] Extracting content from URL: {url}")
-            response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'})
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             for element in soup(["script", "style", "header", "footer", "nav", "aside"]):
@@ -356,6 +381,23 @@ class ContentExtractor:
         except requests.RequestException as e:
             print(f"[{datetime.now()}] ERROR: Failed to fetch or parse URL {url}. Error: {e}")
             raise HTTPException(status_code=400, detail=f"Failed to fetch or parse URL {url}. Error: {e}")
+
+    def from_sitemap(self, sitemap_url: str) -> List[str]:
+        """Parse XML sitemap and return list of page URLs found in <loc> tags."""
+        try:
+            print(f"[{datetime.now()}] Parsing sitemap: {sitemap_url}")
+            response = requests.get(sitemap_url, timeout=30, headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'})
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            urls = []
+            for elem in root.iter():
+                if elem.tag.endswith('loc') and elem.text:
+                    urls.append(elem.text.strip())
+            print(f"[{datetime.now()}] Found {len(urls)} URLs in sitemap.")
+            return urls
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR: Failed to parse sitemap {sitemap_url}: {e}")
+            return []
 
     def from_pdf(self, file_stream) -> str:
         try:
@@ -522,10 +564,14 @@ app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
 async def process_content(
     files: Optional[List[UploadFile]] = File(None, description="A list of documents to process."),
     url: Optional[str] = Form(None, description="A URL to a website to scrape for text."),
+    crawl_urls: Optional[str] = Form(None, description="Newline-separated crawl URLs."),
+    sitemap_urls: Optional[str] = Form(None, description="Newline-separated sitemap URLs."),
+    individual_urls: Optional[str] = Form(None, description="Newline-separated individual URLs."),
     prompt_template: Optional[str] = Form(None, description="Optional custom RAG prompt template. Must include {context}, {chat_history}, and {question}.")
 ):
     print(f"[{datetime.now()}] /process endpoint called.")
-    if not files and not url:
+    has_any_source = bool(files) or bool(url) or bool(crawl_urls) or bool(sitemap_urls) or bool(individual_urls)
+    if not has_any_source:
         raise HTTPException(status_code=400, detail="Please provide at least one document or a URL.")
     
     extractor = ContentExtractor()
@@ -533,12 +579,46 @@ async def process_content(
     os.makedirs(temp_dir)
     raw_text = ""
     processed_files = []
+    all_page_urls = []
+    
+    # Legacy URL (may be newline-separated)
+    if url:
+        all_page_urls.extend([u.strip() for u in url.split('\n') if u.strip()])
+    
+    # Parse newline-separated URL lists
+    if crawl_urls:
+        all_page_urls.extend([u.strip() for u in crawl_urls.split('\n') if u.strip()])
+    if individual_urls:
+        all_page_urls.extend([u.strip() for u in individual_urls.split('\n') if u.strip()])
+    
+    # Sitemaps: parse XML, extract <loc> URLs
+    if sitemap_urls:
+        for sitemap_url in [u.strip() for u in sitemap_urls.split('\n') if u.strip()]:
+            discovered = extractor.from_sitemap(sitemap_url)
+            all_page_urls.extend(discovered)
+    
+    # SSRF protection: filter out private IPs / localhost
+    all_page_urls = [u for u in all_page_urls if is_valid_public_url(u)]
+    if not all_page_urls and not files:
+        raise HTTPException(status_code=400, detail="No valid public URLs provided after security filtering.")
+    
+    # Limit max URLs to prevent abuse
+    if len(all_page_urls) > _MAX_URLS:
+        print(f"[{datetime.now()}] WARN: URL list truncated from {len(all_page_urls)} to {_MAX_URLS}")
+        all_page_urls = all_page_urls[:_MAX_URLS]
     
     try:
         process_start_time = time.time()
-        if url:
-            print(f"[{datetime.now()}] Processing URL: {url}")
-            raw_text += extractor.from_url(url) + "\n\n"
+        
+        # Scrape all collected URLs with rate limiting
+        for page_url in all_page_urls:
+            try:
+                print(f"[{datetime.now()}] Scraping URL: {page_url}")
+                raw_text += extractor.from_url(page_url) + "\n\n"
+                await asyncio.sleep(1.0)  # 1s rate limit between requests
+            except Exception as e:
+                print(f"[{datetime.now()}] ERROR scraping URL {page_url}: {e}")
+                continue
         
         if files:
             print(f"[{datetime.now()}] Processing files: {[f.filename for f in files]}")
@@ -612,12 +692,6 @@ class InferResponse(BaseModel):
     frame_rate: int = Field(default=60, description="Blendshape frame rate")
     audio_base64: Optional[str] = None
     csv: Optional[str] = None
-
-import json
-
-
-import json
-
 
 # =====================================================================================
 # 8. Streaming WebSocket Endpoints
