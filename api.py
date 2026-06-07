@@ -20,7 +20,6 @@ import shutil
 import uvicorn
 import requests
 import re
-import tempfile
 import threading
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -251,7 +250,7 @@ STATIC_AUDIO_DIR = "/app/generated_audio"
 
 
 # --- Configuration & Global State ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is not set. Please set it as an environment variable.")
 
@@ -470,6 +469,7 @@ class ContentExtractor:
             elif ext == ".docx": return self.from_docx(f)
             elif ext == ".pptx": return self.from_pptx(f)
             elif ext in [".xls", ".xlsx"]: return self.from_excel(f)
+            elif ext == ".txt": return f.read().decode("utf-8", errors="replace")
             else:
                 print(f"[{datetime.now()}] INFO: Unsupported File in ZIP: {os.path.basename(file_path)}")
                 return f"[Unsupported File in ZIP: {os.path.basename(file_path)}]"
@@ -623,7 +623,8 @@ async def process_content(
         if files:
             print(f"[{datetime.now()}] Processing files: {[f.filename for f in files]}")
             for file in files:
-                file_path = os.path.join(temp_dir, file.filename)
+                safe_filename = os.path.basename(file.filename)
+                file_path = os.path.join(temp_dir, safe_filename)
                 with open(file_path, "wb") as buffer:
                     shutil.copyfileobj(file.file, buffer)
                 ext = os.path.splitext(file.filename)[1].lower()
@@ -662,7 +663,7 @@ async def process_content(
         )
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in /process endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
+        raise HTTPException(status_code=500, detail="An internal error occurred.")
     finally:
         print(f"[{datetime.now()}] Cleaning up temporary directory: {temp_dir}")
         shutil.rmtree(temp_dir)
@@ -844,7 +845,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             await websocket.send_json({
                 "type": "status",
                 "status": "error",
-                "message": str(e),
+                "message": "An internal error occurred.",
             })
         except Exception:
             pass
