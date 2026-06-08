@@ -4,10 +4,7 @@ from typing import AsyncIterator
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
-GROQ_API_KEY = os.getenv(
-    "GROQ_API_KEY",
-    "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",
-)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 RAG_PROMPT_TEMPLATE = """
 You are a voice-first conversational assistant having a real-time voice-to-voice conversation. Respond like a natural, warm human having a back-and-forth chat.
