@@ -52,7 +52,7 @@ psutil
 websockets>=10.0
 
 # STT
-moonshine==0.1.0
+git+https://github.com/usefulsensors/moonshine.git
 
 # Testing
 pytest>=7.0.0
