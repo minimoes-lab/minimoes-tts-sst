@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio \
+    && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir qwen-tts \
     && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2"
