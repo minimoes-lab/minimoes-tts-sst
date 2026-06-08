@@ -87,11 +87,14 @@ async def load_models():
 
     print(f"[{datetime.now()}] Warming up STT model...")
     t0 = time.time()
-    from routers.stt import _get_stt_worker
-    import asyncio
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _get_stt_worker)
-    print(f"[{datetime.now()}] STT warmed in {time.time() - t0:.2f}s")
+    try:
+        from routers.stt import _get_stt_worker
+        import asyncio
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _get_stt_worker)
+        print(f"[{datetime.now()}] STT warmed in {time.time() - t0:.2f}s")
+    except Exception as e:
+        print(f"[{datetime.now()}] STT warmup failed (non-fatal): {e}")
 
     print(f"[{datetime.now()}] Startup complete. All models ready.")
 

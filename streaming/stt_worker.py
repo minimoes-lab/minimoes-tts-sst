@@ -31,8 +31,12 @@ class MoonshineSTTWorker:
         with self._lock:
             if self.model is not None:
                 return
-            from moonshine import Moonshine
-            self.model = Moonshine(self.model_name)
+            try:
+                from moonshine import Moonshine
+                self.model = Moonshine(self.model_name)
+            except ImportError:
+                from moonshine.onnx_model import MoonshineOnnxModel
+                self.model = MoonshineOnnxModel(self.model_name)
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
         """Transcribe float32 numpy array at 16kHz."""
