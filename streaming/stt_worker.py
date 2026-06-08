@@ -20,7 +20,7 @@ class MoonshineSTTWorker:
     without reprocessing the full buffer — word-by-word latency ~250ms.
     """
 
-    def __init__(self, model_size: str = "moonshine/base", device: str = "cpu", language: Optional[str] = None):
+    def __init__(self, model_size: str = "base", device: str = "cpu", language: Optional[str] = None):
         self.model_name = model_size
         self.device = device
         self.language = language
@@ -31,12 +31,13 @@ class MoonshineSTTWorker:
         with self._lock:
             if self.model is not None:
                 return
-            from moonshine import Moonshine
-            self.model = Moonshine(self.model_name)
+            from faster_whisper import WhisperModel
+            compute_type = "float16" if self.device == "cuda" else "int8"
+            self.model = WhisperModel(self.model_name, device=self.device, compute_type=compute_type)
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
-        tokens = self.model.generate(audio[np.newaxis, :])
-        return self.model.decode(tokens[0])
+        segments, _ = self.model.transcribe(audio, language=self.language, beam_size=1)
+        return "".join(s.text for s in segments).strip()
 
 
 class StreamingSTTSession:
