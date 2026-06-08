@@ -80,6 +80,11 @@ def health():
     return {"status": "healthy"}
 
 
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
+
+
 # ── Audio-to-blendshapes ──────────────────────────────────────────────────────
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
