@@ -31,22 +31,10 @@ class MoonshineSTTWorker:
         with self._lock:
             if self.model is not None:
                 return
-            import moonshine as _ms
-            print(f"[moonshine] version={getattr(_ms, '__version__', 'unknown')} attrs={[a for a in dir(_ms) if not a.startswith('_')]}")
-            try:
-                self.model = _ms.Moonshine(self.model_name)
-            except AttributeError:
-                try:
-                    self.model = _ms.MoonshineOnnxModel(self.model_name)
-                except AttributeError:
-                    # Functional API: moonshine.transcribe(audio, model)
-                    self._transcribe_fn = lambda audio: _ms.transcribe(audio, self.model_name)
-                    self.model = "functional"
-                    print("[moonshine] Using functional transcribe() API")
+            from moonshine import Moonshine
+            self.model = Moonshine(self.model_name)
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
-        if self.model == "functional":
-            return self._transcribe_fn(audio)
         tokens = self.model.generate(audio[np.newaxis, :])
         return self.model.decode(tokens[0])
 
