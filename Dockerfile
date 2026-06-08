@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Install usefulsensors/moonshine (no setup.py at root — copy package manually)
+RUN git clone --depth=1 https://github.com/usefulsensors/moonshine.git /tmp/moonshine \
+    && cp -r /tmp/moonshine/moonshine /usr/local/lib/python3.10/site-packages/moonshine \
+    && rm -rf /tmp/moonshine
+
 COPY requirements.txt .
 
 RUN pip install --upgrade pip \

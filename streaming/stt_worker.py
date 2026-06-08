@@ -31,11 +31,12 @@ class MoonshineSTTWorker:
         with self._lock:
             if self.model is not None:
                 return
-            from moonshine.onnx import MoonshineOnnxModel
-            self.model = MoonshineOnnxModel(model_name=self.model_name)
+            from moonshine import Moonshine
+            self.model = Moonshine(self.model_name)
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
-        return self.model.transcribe(audio)
+        tokens = self.model.generate(audio[np.newaxis, :])
+        return self.model.decode(tokens[0])
 
 
 class StreamingSTTSession:

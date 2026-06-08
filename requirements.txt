@@ -51,8 +51,8 @@ psutil
 # WebSocket client for testing
 websockets>=10.0
 
-# STT
-moonshine-onnx
+# STT - installed via Dockerfile (git clone usefulsensors/moonshine)
+onnxruntime
 
 # Testing
 pytest>=7.0.0
