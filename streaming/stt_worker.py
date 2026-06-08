@@ -13,12 +13,7 @@ SILENCE_THRESHOLD = 0.01     # RMS below this = silence
 SILENCE_CHUNKS = 20          # ~640ms silence = end of utterance
 
 
-class MoonshineSTTWorker:
-    """
-    True streaming STT using Moonshine (usefulsensors/moonshine).
-    Incremental encoder caching: each new chunk updates the transcription
-    without reprocessing the full buffer — word-by-word latency ~250ms.
-    """
+class STTWorker:
 
     def __init__(self, model_size: str = "base", device: str = "cpu", language: Optional[str] = None):
         self.model_name = model_size
@@ -35,8 +30,8 @@ class MoonshineSTTWorker:
             compute_type = "float16" if self.device == "cuda" else "int8"
             self.model = WhisperModel(self.model_name, device=self.device, compute_type=compute_type)
 
-    def transcribe_audio(self, audio: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(audio, language=self.language, beam_size=1)
+    def transcribe_audio(self, audio: np.ndarray, language: Optional[str] = None) -> str:
+        segments, _ = self.model.transcribe(audio, language=language or self.language, beam_size=1)
         return "".join(s.text for s in segments).strip()
 
 
@@ -48,10 +43,11 @@ class StreamingSTTSession:
     - Detects end-of-utterance via silence and emits final transcript
     """
 
-    def __init__(self, worker: MoonshineSTTWorker, on_result: Callable, loop: asyncio.AbstractEventLoop):
+    def __init__(self, worker: STTWorker, on_result: Callable, loop: asyncio.AbstractEventLoop, language: Optional[str] = None):
         self.worker = worker
         self.on_result = on_result
         self.loop = loop
+        self.language = language
 
         self._pcm_buffer: bytes = b""          # raw PCM16 bytes
         self._chunk_count = 0
@@ -87,7 +83,7 @@ class StreamingSTTSession:
             return
         audio = self._pcm_to_float32(self._pcm_buffer)
         try:
-            text = self.worker.transcribe_audio(audio).strip()
+            text = self.worker.transcribe_audio(audio, language=self.language).strip()
         except Exception as e:
             self._emit({"type": "error", "text": "", "error": str(e)})
             return

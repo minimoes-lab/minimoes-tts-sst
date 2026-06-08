@@ -3,21 +3,20 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 import core.state as state
-from streaming.stt_worker import MoonshineSTTWorker, StreamingSTTSession
+from streaming.stt_worker import STTWorker, StreamingSTTSession
 
 router = APIRouter()
 
 
-def _get_stt_worker() -> MoonshineSTTWorker:
+def _get_stt_worker() -> STTWorker:
     with state._stt_worker_lock:
         if state._stt_worker is None:
             import torch
             device_str = "cuda" if torch.cuda.is_available() else "cpu"
-            model = os.getenv("STT_MODEL_SIZE", "moonshine/base")
-            state._stt_worker = MoonshineSTTWorker(
+            model = os.getenv("STT_MODEL_SIZE", "base")
+            state._stt_worker = STTWorker(
                 model_size=model,
                 device=device_str,
-                language=os.getenv("STT_LANGUAGE", None),
             )
             state._stt_worker.load()
     return state._stt_worker
@@ -27,7 +26,7 @@ def _get_stt_worker() -> MoonshineSTTWorker:
 async def stt_warmup():
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _get_stt_worker)
-    return {"status": "ok", "model": os.getenv("STT_MODEL_SIZE", "moonshine/base")}
+    return {"status": "ok", "model": os.getenv("STT_MODEL_SIZE", "base")}
 
 
 @router.websocket("/ws/stt")
@@ -55,8 +54,6 @@ async def websocket_stt(websocket: WebSocket):
         loop = asyncio.get_event_loop()
 
         worker = _get_stt_worker()
-        if language:
-            worker.language = language
 
         async def send_result(result: dict):
             try:
@@ -64,7 +61,7 @@ async def websocket_stt(websocket: WebSocket):
             except Exception:
                 pass
 
-        session = StreamingSTTSession(worker=worker, on_result=send_result, loop=loop)
+        session = StreamingSTTSession(worker=worker, on_result=send_result, loop=loop, language=language)
 
         await websocket.send_json({"type": "status", "status": "listening"})
 
