@@ -8,7 +8,7 @@ config = {
     'output_dim': 68, # if you trained your own, this should also be 61
     'input_dim': 256,
     'frame_size': 128,
-    'use_half_precision': False,
+    'use_half_precision': True,
     'blendshape_divisor': 65.0,
     'clamp_blendshapes': True,
 }
