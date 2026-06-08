@@ -64,15 +64,16 @@ async def load_models():
     )
     print(f"[{datetime.now()}] Embeddings loaded in {time.time() - t0:.2f}s")
 
-    if not os.path.exists(model_path):
-        print(f"[{datetime.now()}] Blendshape model not found, downloading...")
+    model_size = os.path.getsize(model_path) if os.path.exists(model_path) else 0
+    if model_size < 1_000_000:
+        print(f"[{datetime.now()}] Blendshape model missing or invalid (size={model_size}), downloading...")
         import urllib.request
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         urllib.request.urlretrieve(
             "https://huggingface.co/KKKONNK/model/resolve/main/model.pth",
             model_path,
         )
-        print(f"[{datetime.now()}] Blendshape model downloaded.")
+        print(f"[{datetime.now()}] Blendshape model downloaded ({os.path.getsize(model_path)} bytes).")
 
     print(f"[{datetime.now()}] Loading blendshape model from {model_path}...")
     state.blendshape_model = load_model(model_path, config, device)
