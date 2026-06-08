@@ -77,7 +77,23 @@ async def load_models():
 
     print(f"[{datetime.now()}] Loading blendshape model from {model_path}...")
     state.blendshape_model = load_model(model_path, config, device)
-    print(f"[{datetime.now()}] Startup complete.")
+    print(f"[{datetime.now()}] Blendshape model loaded.")
+
+    print(f"[{datetime.now()}] Warming up TTS model...")
+    t0 = time.time()
+    from routers.tts import tts_warmup
+    await tts_warmup()
+    print(f"[{datetime.now()}] TTS warmed in {time.time() - t0:.2f}s")
+
+    print(f"[{datetime.now()}] Warming up STT model...")
+    t0 = time.time()
+    from routers.stt import _get_stt_worker
+    import asyncio
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _get_stt_worker)
+    print(f"[{datetime.now()}] STT warmed in {time.time() - t0:.2f}s")
+
+    print(f"[{datetime.now()}] Startup complete. All models ready.")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
