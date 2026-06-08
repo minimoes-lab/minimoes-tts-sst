@@ -34,8 +34,6 @@ import core.state as state
 router = APIRouter()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is not set.")
 
 _BLOCKED_HOSTS = {'localhost', '127.0.0.1', '0.0.0.0', '::1'}
 _BLOCKED_PREFIXES = (
@@ -186,6 +184,9 @@ def get_rag_chain(text_chunks: List[str]) -> ConversationalRetrievalChain:
         raise ValueError("Cannot create RAG chain with no text chunks.")
     if not state.embeddings_model:
         raise RuntimeError("Embeddings model not loaded.")
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not set.")
 
     vector_store = FAISS.from_texts(texts=text_chunks, embedding=state.embeddings_model)
     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
@@ -193,7 +194,7 @@ def get_rag_chain(text_chunks: List[str]) -> ConversationalRetrievalChain:
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0.7,
         max_tokens=800,
-        groq_api_key=GROQ_API_KEY,
+        groq_api_key=api_key,
     )
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
