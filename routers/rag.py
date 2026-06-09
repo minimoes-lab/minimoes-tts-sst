@@ -25,9 +25,10 @@ from pydantic import BaseModel, Field
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
+from langchain.chains import ConversationalRetrievalChain, ConversationChain
 from langchain_groq import ChatGroq
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
+from langchain.memory import ConversationBufferMemory
 
 import core.state as state
 
@@ -70,6 +71,15 @@ You are a voice-first conversational assistant. Your goal is to sound natural, w
 **Answer:**
 """
 RAG_PROMPT = PromptTemplate.from_template(PROFESSIONAL_RAG_PROMPT_TEMPLATE)
+
+DIRECT_CHAT_PROMPT_TEMPLATE = """You are a voice-first conversational assistant. Be natural, warm, and concise.
+Use short sentences. Write for speech, not reading. Reply in the same language as the user.
+End with one short follow-up question when appropriate.
+
+{history}
+Human: {input}
+Assistant:"""
+DIRECT_CHAT_PROMPT = PromptTemplate.from_template(DIRECT_CHAT_PROMPT_TEMPLATE)
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -219,7 +229,23 @@ async def process_content(
     print(f"[{datetime.now()}] /process endpoint called.")
     has_any_source = bool(files) or bool(url) or bool(crawl_urls) or bool(sitemap_urls) or bool(individual_urls)
     if not has_any_source:
-        raise HTTPException(status_code=400, detail="Please provide at least one document or a URL.")
+        # No documents/URL — create a direct LLM session (no RAG)
+        api_key = GROQ_API_KEY
+        if not api_key:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured.")
+        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=800, groq_api_key=api_key)
+        memory = ConversationBufferMemory(memory_key="history", return_messages=False)
+        custom_prompt = DIRECT_CHAT_PROMPT
+        if prompt_template and prompt_template.strip():
+            try:
+                custom_prompt = PromptTemplate.from_template(prompt_template.strip() + "\n\n{history}\nHuman: {input}\nAssistant:")
+            except Exception:
+                pass
+        chain = ConversationChain(llm=llm, memory=memory, prompt=custom_prompt, verbose=False)
+        session_id = uuid.uuid4().hex
+        state.conversations[session_id] = chain
+        print(f"[{datetime.now()}] Direct LLM session created: {session_id}")
+        return ProcessResponse(session_id=session_id, chunks=0, files_processed=[], message="Direct LLM session (no RAG)")
 
     extractor = ContentExtractor()
     temp_dir = f"temp_{uuid.uuid4().hex}"

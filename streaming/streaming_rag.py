@@ -165,15 +165,31 @@ async def streaming_rag_query(
     chain, question: str
 ) -> AsyncIterator[str]:
     """
-    Separate retrieval from generation so we can stream tokens.
-
-    1. Retrieve documents via FAISS (fast, non-streaming).
-    2. Format the prompt with retrieved context + chat history.
-    3. Stream tokens from the Groq LLM.
-    4. Save the full answer back to conversation memory.
+    Supports both ConversationalRetrievalChain (RAG) and ConversationChain (direct LLM).
     """
 
-    # --- Step 1: retrieve documents ---
+    # --- Direct LLM mode (no retriever) ---
+    if not hasattr(chain, 'retriever'):
+        llm = ChatGroq(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.7,
+            max_tokens=800,
+            groq_api_key=GROQ_API_KEY,
+            streaming=True,
+        )
+        memory_vars = chain.memory.load_memory_variables({})
+        history_str = memory_vars.get("history", "")
+        prompt = chain.prompt.format(history=history_str, input=question)
+        full_answer = ""
+        async for chunk in llm.astream(prompt):
+            token = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if token:
+                full_answer += token
+                yield token
+        chain.memory.save_context({"input": question}, {"output": full_answer})
+        return
+
+    # --- RAG mode ---
     retriever = chain.retriever
     docs = await retriever.ainvoke(question)
 
