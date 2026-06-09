@@ -168,25 +168,30 @@ async def streaming_rag_query(
     Supports both ConversationalRetrievalChain (RAG) and ConversationChain (direct LLM).
     """
 
-    # --- Direct LLM mode (no retriever) ---
-    if not hasattr(chain, 'retriever'):
+    # --- Direct LLM mode (dict with type="direct") ---
+    if isinstance(chain, dict) and chain.get("type") == "direct":
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
         llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="llama-3.3-70b-versatile",
             temperature=0.7,
             max_tokens=800,
             groq_api_key=GROQ_API_KEY,
             streaming=True,
         )
-        memory_vars = chain.memory.load_memory_variables({})
-        history_str = memory_vars.get("history", "")
-        prompt = chain.prompt.format(history=history_str, input=question)
+        messages = [SystemMessage(content=chain["system_prompt"])]
+        for turn in chain["history"]:
+            messages.append(HumanMessage(content=turn["human"]))
+            messages.append(AIMessage(content=turn["ai"]))
+        messages.append(HumanMessage(content=question))
+
         full_answer = ""
-        async for chunk in llm.astream(prompt):
+        async for chunk in llm.astream(messages):
             token = chunk.content if hasattr(chunk, "content") else str(chunk)
             if token:
                 full_answer += token
                 yield token
-        chain.memory.save_context({"input": question}, {"output": full_answer})
+
+        chain["history"].append({"human": question, "ai": full_answer})
         return
 
     # --- RAG mode ---

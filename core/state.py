@@ -6,10 +6,10 @@ import os
 import threading
 from typing import Dict, Any, Optional
 
-from langchain.chains import ConversationalRetrievalChain
-
 # ── RAG sessions ────────────────────────────────────────────────────────────
-conversations: Dict[str, ConversationalRetrievalChain] = {}
+# Values are either a ConversationalRetrievalChain (RAG mode)
+# or a dict {"type": "direct", "history": [...], "system_prompt": str} (direct LLM mode)
+conversations: Dict[str, Any] = {}
 embeddings_model = None
 blendshape_model = None
 
