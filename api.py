@@ -16,6 +16,8 @@ import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 import core.state as state
 from routers import rag, stt, tts, ws
@@ -34,10 +36,37 @@ print("Activated device:", device)
 model_path = "utils/model/model.pth"
 
 
+_HTTP_API_KEY = os.getenv("RUNPOD_API_KEY", "")
+
+# Endpoints that must stay public (health checks, WebSocket handshakes handled by their own auth)
+_PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai"}
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Require Authorization: Bearer <RUNPOD_API_KEY> on all non-public HTTP endpoints."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not _HTTP_API_KEY:
+            return await call_next(request)  # auth disabled in dev (no key set)
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if auth != f"Bearer {_HTTP_API_KEY}":
+            return Response(
+                content='{"detail":"Unauthorized"}',
+                status_code=401,
+                media_type="application/json",
+            )
+        return await call_next(request)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Init async locks (must be created inside the running event loop) ──────
+    # ── Init async primitives (must be inside running event loop) ────────────
     state._voice_store_lock = asyncio.Lock()
+    # Limit concurrent GPU pipelines — each ws/infer/kyutai runs LLM+TTS+BS in parallel.
+    # More than 3 simultaneous pipelines saturates the GPU and causes OOM / latency spikes.
+    state._gpu_semaphore = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_PIPELINES", "3")))
 
     from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -82,7 +111,23 @@ async def lifespan(app: FastAPI):
 
     print(f"[{datetime.now()}] Startup complete. All models ready.")
 
+    # Background task: purge expired RAG sessions every 30 minutes
+    async def _purge_loop():
+        while True:
+            await asyncio.sleep(1800)  # 30 min
+            removed = state.purge_expired_conversations()
+            if removed:
+                print(f"[{datetime.now()}] Purged {removed} expired RAG session(s).")
+
+    purge_task = asyncio.create_task(_purge_loop())
+
     yield  # ── Application runs ──────────────────────────────────────────────
+
+    purge_task.cancel()
+    try:
+        await purge_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -91,6 +136,8 @@ app = FastAPI(
     version="2.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(APIKeyMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(rag.router)

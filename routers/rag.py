@@ -266,11 +266,11 @@ async def process_content(
             raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured.")
         system_prompt = (prompt_template.strip() if prompt_template and prompt_template.strip() else DEFAULT_SYSTEM_PROMPT)
         session_id = uuid.uuid4().hex
-        state.conversations[session_id] = {
+        state.set_conversation(session_id, {
             "type": "direct",
             "system_prompt": system_prompt,
             "history": [],
-        }
+        })
         print(f"[{datetime.now()}] Direct LLM session created: {session_id}")
         return ProcessResponse(session_id=session_id, message="Direct LLM session (no RAG)", filenames=[])
 
@@ -325,10 +325,12 @@ async def process_content(
         text_chunks = text_splitter.split_text(raw_text)
 
         session_id = str(uuid.uuid4())
-        state.conversations[session_id] = get_rag_chain(text_chunks)
+        rag_chain = get_rag_chain(text_chunks)
 
         if prompt_template:
-            state.conversations[session_id].combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template(prompt_template)
+            rag_chain.combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template(prompt_template)
+
+        state.set_conversation(session_id, rag_chain)
 
         return ProcessResponse(
             session_id=session_id,

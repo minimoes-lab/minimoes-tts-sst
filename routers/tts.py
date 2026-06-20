@@ -109,6 +109,16 @@ async def set_tts_reference_audio(
         raise HTTPException(status_code=400, detail=f"Failed to build voice clone prompt: {e}")
 
     async with state._voice_store_lock:
+        # Remove old WAV file for this voice_id before replacing it
+        old_entry = state._voice_store.get(str(voice_id))
+        if isinstance(old_entry, dict):
+            old_path = old_entry.get("audio_path")
+            if old_path and old_path != ref_path and os.path.isfile(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
         state._voice_store[str(voice_id)] = {
             "audio_path": ref_path,
             "text": text.strip(),

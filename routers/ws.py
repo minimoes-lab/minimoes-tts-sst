@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime
 from typing import Annotated, Optional
@@ -65,7 +66,7 @@ async def websocket_infer_kyutai(
             await websocket.close()
             return
 
-        chain = state.conversations.get(session_id)
+        chain = state.get_conversation(session_id)
         if not chain:
             await websocket.send_json({"type": "status", "status": "error", "message": "Session not found. Call /process first."})
             await websocket.close()
@@ -93,23 +94,36 @@ async def websocket_infer_kyutai(
             await websocket.close()
             return
 
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)
+        # Enforce GPU concurrency limit — reject immediately if all slots are taken
+        if state._gpu_semaphore is not None and state._gpu_semaphore.locked():
+            slots = int(os.getenv("MAX_CONCURRENT_PIPELINES", "3"))
+            if state._gpu_semaphore._value == 0:  # type: ignore[attr-defined]
+                await websocket.send_json({
+                    "type": "status", "status": "error",
+                    "message": f"Server busy: max {slots} concurrent sessions. Try again shortly."
+                })
+                await websocket.close()
+                return
 
-        coordinator = KyutaiStreamCoordinator(
-            websocket=websocket,
-            tts_worker=model_worker,
-            blendshape_worker=bs_worker,
-            config=config,
-        )
+        sem = state._gpu_semaphore
+        async with (sem if sem is not None else asyncio.Semaphore(999)):
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)
 
-        await coordinator.run_streaming_pipeline(
-            rag_chain=chain,
-            question=question,
-            voice_clone_prompt=voice_prompt,
-            return_audio=return_audio,
-            chunk_ms=chunk_ms,
-        )
+            coordinator = KyutaiStreamCoordinator(
+                websocket=websocket,
+                tts_worker=model_worker,
+                blendshape_worker=bs_worker,
+                config=config,
+            )
+
+            await coordinator.run_streaming_pipeline(
+                rag_chain=chain,
+                question=question,
+                voice_clone_prompt=voice_prompt,
+                return_audio=return_audio,
+                chunk_ms=chunk_ms,
+            )
 
         monitor.print_summary()
 
