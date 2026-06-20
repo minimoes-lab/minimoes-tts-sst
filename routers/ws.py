@@ -48,7 +48,11 @@ async def websocket_infer_kyutai(
     monitor.reset()
 
     try:
-        init_msg = await websocket.receive_json()
+        try:
+            init_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await websocket.close(code=1008, reason="Init timeout")
+            return
 
         if init_msg.get("type") != "start":
             await websocket.send_json({"type": "status", "status": "error", "message": "First message must be type 'start'"})

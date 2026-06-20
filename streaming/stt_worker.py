@@ -11,6 +11,8 @@ CHUNK_SAMPLES = 512          # ~32ms per chunk at 16kHz
 PARTIAL_EVERY_N_CHUNKS = 8   # emit partial every ~256ms
 SILENCE_THRESHOLD = 0.01     # RMS below this = silence
 SILENCE_CHUNKS = 20          # ~640ms silence = end of utterance
+# Max 5 minutes of PCM16 mono 16kHz = 5*60*16000*2 bytes = 9.6 MB
+_MAX_PCM_BUFFER_BYTES = 5 * 60 * SAMPLE_RATE * 2
 
 
 class STTWorker:
@@ -104,13 +106,22 @@ class StreamingSTTSession:
 
     def _loop(self):
         while True:
-            event, data = self._q.get()
+            try:
+                event, data = self._q.get(timeout=1.0)
+            except Exception:
+                # Timeout or queue error — check if we should keep waiting
+                continue
 
             if event == "flush":
                 self._transcribe_buffer(is_final=True)
                 break
 
             # event == "audio"
+            # Cap buffer to prevent OOM on long/abandoned sessions
+            if len(self._pcm_buffer) + len(data) > _MAX_PCM_BUFFER_BYTES:
+                # Drop oldest data to make room (keep most recent audio)
+                keep = _MAX_PCM_BUFFER_BYTES - len(data)
+                self._pcm_buffer = self._pcm_buffer[-keep:] if keep > 0 else b""
             self._pcm_buffer += data
             self._chunk_count += 1
 

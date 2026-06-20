@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from typing import Annotated, Optional
 
@@ -63,7 +64,11 @@ async def websocket_stt(
     await websocket.accept()
 
     try:
-        init_msg = await websocket.receive_json()
+        try:
+            init_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await websocket.close(code=1008, reason="Init timeout")
+            return
         if init_msg.get("type") != "start":
             await websocket.send_json({"type": "error", "message": "First message must be type 'start'"})
             await websocket.close()
@@ -93,7 +98,7 @@ async def websocket_stt(
 
             if "text" in msg:
                 try:
-                    data = __import__("json").loads(msg["text"])
+                    data = json.loads(msg["text"])
                 except Exception:
                     continue
                 if data.get("type") == "stop":

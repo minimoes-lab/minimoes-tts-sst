@@ -306,16 +306,22 @@ async def process_content(
                 print(f"[{datetime.now()}] ERROR scraping URL {page_url}: {e}")
 
         if files:
+            loop = asyncio.get_running_loop()
             for file in files:
                 safe_filename = os.path.basename(file.filename)
                 file_path = os.path.join(temp_dir, safe_filename)
-                with open(file_path, "wb") as buffer:
-                    shutil.copyfileobj(file.file, buffer)
-                ext = os.path.splitext(file.filename)[1].lower()
-                if ext == ".zip":
-                    raw_text += extractor.from_zip(file_path, os.path.join(temp_dir, "unzipped"))
-                else:
-                    raw_text += extractor.from_file_path(file_path) + "\n\n"
+                file_content = await file.read()
+
+                def _write_and_extract(_path=file_path, _content=file_content, _fname=file.filename):
+                    with open(_path, "wb") as buf:
+                        buf.write(_content)
+                    ext = os.path.splitext(_fname)[1].lower()
+                    if ext == ".zip":
+                        return extractor.from_zip(_path, os.path.join(temp_dir, "unzipped"))
+                    return extractor.from_file_path(_path) + "\n\n"
+
+                extracted = await loop.run_in_executor(None, _write_and_extract)
+                raw_text += extracted
                 processed_files.append(file.filename)
 
         if not raw_text.strip():

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import AsyncIterator
 
@@ -5,6 +6,37 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+_MAX_HISTORY_TURNS = 20
+
+# Singleton Groq clients — one per model, reused across all requests (connection pooling)
+_groq_rag: ChatGroq | None = None
+_groq_direct: ChatGroq | None = None
+
+
+def _get_groq_rag() -> ChatGroq:
+    global _groq_rag
+    if _groq_rag is None:
+        _groq_rag = ChatGroq(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.7,
+            max_tokens=800,
+            groq_api_key=GROQ_API_KEY,
+            streaming=True,
+        )
+    return _groq_rag
+
+
+def _get_groq_direct() -> ChatGroq:
+    global _groq_direct
+    if _groq_direct is None:
+        _groq_direct = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
+            max_tokens=800,
+            groq_api_key=GROQ_API_KEY,
+            streaming=True,
+        )
+    return _groq_direct
 
 RAG_PROMPT_TEMPLATE = """
 You are a voice-first conversational assistant having a real-time voice-to-voice conversation. Respond like a natural, warm human having a back-and-forth chat.
@@ -171,15 +203,11 @@ async def streaming_rag_query(
     # --- Direct LLM mode (dict with type="direct") ---
     if isinstance(chain, dict) and chain.get("type") == "direct":
         from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            temperature=0.7,
-            max_tokens=800,
-            groq_api_key=GROQ_API_KEY,
-            streaming=True,
-        )
+        llm = _get_groq_direct()
         messages = [SystemMessage(content=chain["system_prompt"])]
-        for turn in chain["history"]:
+        # Cap history to avoid unbounded memory growth
+        history = chain["history"][-_MAX_HISTORY_TURNS:]
+        for turn in history:
             messages.append(HumanMessage(content=turn["human"]))
             messages.append(AIMessage(content=turn["ai"]))
         messages.append(HumanMessage(content=question))
@@ -192,13 +220,16 @@ async def streaming_rag_query(
                 yield token
 
         chain["history"].append({"human": question, "ai": full_answer})
+        # Prune in place to keep only the last _MAX_HISTORY_TURNS turns
+        if len(chain["history"]) > _MAX_HISTORY_TURNS:
+            chain["history"] = chain["history"][-_MAX_HISTORY_TURNS:]
         return
 
     # --- RAG mode ---
     if not hasattr(chain, "retriever"):
         raise ValueError(f"Session type not supported: {type(chain).__name__}. Expected ConversationalRetrievalChain or direct dict.")
     retriever = chain.retriever
-    docs = await retriever.ainvoke(question)
+    docs = await asyncio.wait_for(retriever.ainvoke(question), timeout=15.0)
 
     # --- Step 2: format context ---
     context = "\n\n".join(doc.page_content for doc in docs)
@@ -220,13 +251,7 @@ async def streaming_rag_query(
     )
 
     # --- Step 3: stream from LLM ---
-    llm = ChatGroq(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
-        temperature=0.7,
-        max_tokens=800,
-        groq_api_key=GROQ_API_KEY,
-        streaming=True,
-    )
+    llm = _get_groq_rag()
 
     full_answer = ""
     async for chunk in llm.astream(prompt):

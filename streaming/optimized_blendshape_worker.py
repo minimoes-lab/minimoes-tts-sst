@@ -61,22 +61,9 @@ class OptimizedBlendshapeWorker:
                     dtype=torch.qint8
                 )
             
-            # Compile model for faster execution (PyTorch 2.0+)
-            # Best practice:
-            # - Compile only on CUDA (CPU compile can take minutes and break realtime WS)
-            # - Allow disabling via env for safety / quick rollback
-            enable_compile_env = str(__import__("os").environ.get("ENABLE_TORCH_COMPILE", "1")).strip().lower()
-            enable_compile = enable_compile_env not in {"0", "false", "no", "off"}
-            if (
-                enable_compile
-                and torch.cuda.is_available()
-                and hasattr(torch, "compile")
-            ):
-                try:
-                    print(f"[{datetime.now()}] [BS Worker] Compiling model with torch.compile")
-                    self.model = torch.compile(self.model, mode="reduce-overhead")
-                except Exception as e:
-                    print(f"[{datetime.now()}] [BS Worker] Compile failed: {e}")
+            # torch.compile() is intentionally NOT called here.
+            # It is called once in app lifespan (api.py) before the model is passed in,
+            # so it never blocks a WebSocket request handler.
             
             # Set to eval mode and optimize for inference
             self.model.eval()
@@ -244,10 +231,8 @@ class OptimizedBlendshapeWorker:
             return [None] * len(audio_chunks)
     
     def _get_cache_key(self, audio_chunk: AudioChunk) -> str:
-        """Generate cache key for audio chunk."""
-        # Use hash of audio data
         import hashlib
-        return hashlib.md5(audio_chunk.audio_bytes[:1024]).hexdigest()
+        return hashlib.md5(audio_chunk.audio_bytes).hexdigest()
     
     def clear_cache(self):
         """Clear the frame cache."""

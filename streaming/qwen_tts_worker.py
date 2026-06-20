@@ -47,6 +47,7 @@ class QwenTTSWorker:
         self.reference_audio_path = reference_audio_path
         self.reference_text: Optional[str] = reference_text
         self.raise_on_error = raise_on_error
+        self.voice_clone_prompt = None  # set by _load_model() if reference audio provided
         self._load_model()
     
     def _load_model(self):

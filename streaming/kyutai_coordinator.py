@@ -11,7 +11,7 @@ buffer-health monitor, error handler.
 """
 import asyncio
 from datetime import datetime
-from typing import Optional, List
+from typing import Any, Optional, List
 
 from fastapi import WebSocket
 
@@ -30,7 +30,7 @@ class DelayedStream:
     def push(self, item):
         self.buffer.append(item)
 
-    def pop(self) -> Optional[any]:
+    def pop(self) -> Optional[Any]:
         if len(self.buffer) > self.delay_frames:
             return self.buffer.pop(0)
         return None
