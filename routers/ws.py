@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Optional
 
 import torch
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
@@ -18,7 +18,7 @@ _API_KEY = os.getenv("RUNPOD_API_KEY", "")
 
 
 async def _require_ws_token(
-    token: Annotated[str | None, Query()] = None,
+    token: Annotated[Optional[str], Query()] = None,
 ) -> str:
     """Reject the WebSocket handshake before accept() if the token is wrong."""
     if not _API_KEY:

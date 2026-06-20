@@ -8,7 +8,7 @@ import time
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Tuple
 
 import numpy as np
 import scipy.io.wavfile as wavfile

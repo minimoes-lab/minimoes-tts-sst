@@ -138,7 +138,7 @@ class ContentExtractor:
                 allow_redirects=False,
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'},
             )
-            if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+            if 300 <= response.status_code < 400:
                 raise HTTPException(status_code=400, detail=f"URL redirects are not allowed: {url}")
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -150,7 +150,14 @@ class ContentExtractor:
 
     def from_sitemap(self, sitemap_url: str) -> List[str]:
         try:
-            response = requests.get(sitemap_url, timeout=30, headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'})
+            response = requests.get(
+                sitemap_url,
+                timeout=30,
+                allow_redirects=False,
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'},
+            )
+            if 300 <= response.status_code < 400:
+                return []
             response.raise_for_status()
             root = ET.fromstring(response.content)
             return [elem.text.strip() for elem in root.iter() if elem.tag.endswith('loc') and elem.text]
