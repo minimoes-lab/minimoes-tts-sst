@@ -72,7 +72,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             default_entry = state._voice_store.get("default")
             voice_prompt = default_entry.get("prompt") if isinstance(default_entry, dict) else None
 
-        if voice_prompt is None:
+        if voice_prompt is None and return_audio:
             await websocket.send_json({"type": "status", "status": "error", "message": "No voice configured. Upload a reference audio via POST /tts/reference_audio first."})
             await websocket.close()
             return
