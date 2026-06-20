@@ -1,21 +1,28 @@
+import asyncio
 import os
 import uuid
-import asyncio
-from typing import Optional
 
 import torch
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 import core.state as state
 from streaming.qwen_tts_worker import QwenTTSWorker
 
 router = APIRouter()
 
+# WAV magic bytes: "RIFF" at offset 0, "WAVE" at offset 8
+_WAV_MAGIC_RIFF = b"RIFF"
+_WAV_MAGIC_WAVE = b"WAVE"
+_WAV_HEADER_MIN = 12  # minimum bytes to read for both markers
 
-def _get_tts_worker():
-    """Return the loaded QwenTTSWorker, or None if not yet warmed."""
-    with state._tts_worker_lock:
-        return state._tts_model_worker
+
+def _is_valid_wav(data: bytes) -> bool:
+    """Verify the file is a real WAV by checking RIFF/WAVE magic bytes."""
+    return (
+        len(data) >= _WAV_HEADER_MIN
+        and data[:4] == _WAV_MAGIC_RIFF
+        and data[8:12] == _WAV_MAGIC_WAVE
+    )
 
 
 @router.post("/tts/warmup")
@@ -74,6 +81,9 @@ async def set_tts_reference_audio(
             raise HTTPException(status_code=400, detail="Empty audio file")
         if len(content) > MAX_SIZE:
             raise HTTPException(status_code=413, detail="Audio file too large. Maximum 50 MB.")
+        # Verify real WAV magic bytes — rejects executables/binaries disguised as .wav
+        if not _is_valid_wav(content):
+            raise HTTPException(status_code=400, detail="File is not a valid WAV (RIFF/WAVE header missing).")
         with open(ref_path, "wb") as f:
             f.write(content)
     finally:
@@ -98,15 +108,16 @@ async def set_tts_reference_audio(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to build voice clone prompt: {e}")
 
-    state._voice_store[str(voice_id)] = {
-        "audio_path": ref_path,
-        "text": text.strip(),
-        "prompt": prompt,
-    }
+    async with state._voice_store_lock:
+        state._voice_store[str(voice_id)] = {
+            "audio_path": ref_path,
+            "text": text.strip(),
+            "prompt": prompt,
+        }
 
-    if str(voice_id) == "default":
-        state._tts_reference_audio_path = ref_path
-        state._tts_reference_text = text.strip()
+        if str(voice_id) == "default":
+            state._tts_reference_audio_path = ref_path
+            state._tts_reference_text = text.strip()
 
     return {
         "status": "ok",

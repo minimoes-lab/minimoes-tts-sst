@@ -1,24 +1,43 @@
+import os
 from datetime import datetime
+from typing import Annotated
 
 import torch
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from starlette.status import WS_1008_POLICY_VIOLATION
 
 import core.state as state
-from streaming.performance_monitor import get_monitor
-from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
 from streaming.kyutai_coordinator import KyutaiStreamCoordinator
+from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
+from streaming.performance_monitor import get_monitor
 from utils.config import config
 
 router = APIRouter()
 
+_API_KEY = os.getenv("RUNPOD_API_KEY", "")
+
+
+async def _require_ws_token(
+    token: Annotated[str | None, Query()] = None,
+) -> str:
+    """Reject the WebSocket handshake before accept() if the token is wrong."""
+    if not _API_KEY:
+        return ""  # auth disabled when no key is configured (dev mode)
+    if token != _API_KEY:
+        raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason="Invalid or missing token")
+    return token
+
 
 @router.websocket("/ws/infer/kyutai")
-async def websocket_infer_kyutai(websocket: WebSocket):
+async def websocket_infer_kyutai(
+    websocket: WebSocket,
+    _token: Annotated[str, Depends(_require_ws_token)],
+):
     """
     Real-time streaming inference: RAG → TTS → blendshapes via PCM16.
 
     Client flow:
-      1. Connect to ws://.../ws/infer/kyutai
+      1. Connect to ws://.../ws/infer/kyutai?token=<RUNPOD_API_KEY>
       2. Send: {"type": "start", "session_id": "...", "question": "...", ...}
       3. Receive: text_chunk, audio_chunk (PCM16), blendshapes, status
       4. Send: {"type": "interrupt"} to stop
@@ -37,9 +56,9 @@ async def websocket_infer_kyutai(websocket: WebSocket):
 
         session_id  = init_msg.get("session_id")
         question    = init_msg.get("question")
-        voice_id       = init_msg.get("voice_id") or "default"
-        return_audio   = init_msg.get("return_audio", True)
-        chunk_ms       = init_msg.get("chunk_ms")
+        voice_id    = init_msg.get("voice_id") or "default"
+        return_audio = init_msg.get("return_audio", True)
+        chunk_ms    = init_msg.get("chunk_ms")
 
         if not session_id or not question:
             await websocket.send_json({"type": "status", "status": "error", "message": "session_id and question are required"})
@@ -60,13 +79,14 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             await websocket.close()
             return
 
-        voice_entry = state._voice_store.get(str(voice_id))
-        voice_prompt = voice_entry.get("prompt") if isinstance(voice_entry, dict) else None
+        async with state._voice_store_lock:
+            voice_entry = state._voice_store.get(str(voice_id))
+            voice_prompt = voice_entry.get("prompt") if isinstance(voice_entry, dict) else None
 
-        # Fallback: if requested voice not found, try "default"
-        if voice_prompt is None and str(voice_id) != "default":
-            default_entry = state._voice_store.get("default")
-            voice_prompt = default_entry.get("prompt") if isinstance(default_entry, dict) else None
+            # Fallback: if requested voice not found, try "default"
+            if voice_prompt is None and str(voice_id) != "default":
+                default_entry = state._voice_store.get("default")
+                voice_prompt = default_entry.get("prompt") if isinstance(default_entry, dict) else None
 
         if voice_prompt is None and return_audio:
             await websocket.send_json({"type": "status", "status": "error", "message": "No voice configured. Upload a reference audio via POST /tts/reference_audio first."})

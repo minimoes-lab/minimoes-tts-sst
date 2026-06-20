@@ -1,11 +1,27 @@
-import os
 import asyncio
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import os
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from starlette.status import WS_1008_POLICY_VIOLATION
 
 import core.state as state
 from streaming.stt_worker import STTWorker, StreamingSTTSession
 
 router = APIRouter()
+
+_API_KEY = os.getenv("RUNPOD_API_KEY", "")
+
+
+async def _require_ws_token(
+    token: Annotated[str | None, Query()] = None,
+) -> str:
+    """Reject the WebSocket handshake before accept() if the token is wrong."""
+    if not _API_KEY:
+        return ""  # auth disabled when no key is configured (dev mode)
+    if token != _API_KEY:
+        raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason="Invalid or missing token")
+    return token
 
 
 def _get_stt_worker() -> STTWorker:
@@ -30,12 +46,15 @@ async def stt_warmup():
 
 
 @router.websocket("/ws/stt")
-async def websocket_stt(websocket: WebSocket):
+async def websocket_stt(
+    websocket: WebSocket,
+    _token: Annotated[str, Depends(_require_ws_token)],
+):
     """
     Real-time streaming STT via WebSocket.
 
     Flow:
-      1. Connect
+      1. Connect to ws://.../ws/stt?token=<RUNPOD_API_KEY>
       2. Send: {"type": "start", "language": "fr"}
       3. Send binary PCM16 mono 16kHz chunks
       4. Receive: {"type": "partial"/"final", "text": "..."}

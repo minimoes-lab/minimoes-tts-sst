@@ -99,14 +99,26 @@ class ProcessResponse(BaseModel):
 # ── SSRF guard ───────────────────────────────────────────────────────────────
 
 def is_valid_public_url(url: str) -> bool:
+    """
+    Allowlist-based SSRF defence (OWASP SSRF Prevention Cheat Sheet):
+    - Only http:// and https:// schemes accepted (blocks file://, ftp://, gopher://)
+    - Hostname must not resolve to private/loopback/metadata ranges
+    - Redirects are disabled at fetch time (allow_redirects=False)
+    """
     try:
         parsed = urllib.parse.urlparse(url)
+        # Scheme allowlist: only http and https
+        if parsed.scheme not in ("http", "https"):
+            return False
         hostname = (parsed.hostname or '').lower()
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTS:
             return False
         if hostname.startswith(_BLOCKED_PREFIXES):
+            return False
+        # Block cloud metadata endpoints explicitly
+        if hostname in ("169.254.169.254", "metadata.google.internal", "metadata.azure.com"):
             return False
         return True
     except Exception:
@@ -118,7 +130,16 @@ def is_valid_public_url(url: str) -> bool:
 class ContentExtractor:
     def from_url(self, url: str) -> str:
         try:
-            response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'})
+            # allow_redirects=False prevents redirect-based SSRF bypass
+            # (attacker submits public URL that redirects to internal/metadata endpoint)
+            response = requests.get(
+                url,
+                timeout=15,
+                allow_redirects=False,
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'},
+            )
+            if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+                raise HTTPException(status_code=400, detail=f"URL redirects are not allowed: {url}")
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             for element in soup(["script", "style", "header", "footer", "nav", "aside"]):

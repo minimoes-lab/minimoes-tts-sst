@@ -2,25 +2,26 @@
 # For individuals and businesses earning **under $1M per year**, this software is licensed under the **MIT License**
 # Businesses or organizations with **annual revenue of $1,000,000 or more** must obtain permission to use this software commercially.
 
-import os
+import asyncio
 import multiprocessing
+import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import numpy as np
 import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import core.state as state
+from routers import rag, stt, tts, ws
+from utils.config import blendshapes_to_named_frames, config, get_blendshape_names
 from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
-from utils.config import config, get_blendshape_names, blendshapes_to_named_frames
-import numpy as np
-
-import core.state as state
-from routers import rag, tts, stt, ws
 
 if __name__ == '__main__' or __name__.startswith("api"):
     try:
@@ -28,32 +29,16 @@ if __name__ == '__main__' or __name__.startswith("api"):
     except RuntimeError:
         pass
 
-app = FastAPI(
-    title="Intelligent Document & Web API",
-    description="RAG pipeline with Groq + Qwen3-TTS speech + Moonshine STT.",
-    version="2.1.0",
-)
-
-# ── Routers ──────────────────────────────────────────────────────────────────
-app.include_router(rag.router)
-app.include_router(tts.router)
-app.include_router(stt.router)
-app.include_router(ws.router)
-
-# ── Static files ─────────────────────────────────────────────────────────────
-STATIC_AUDIO_DIR = "generated_audio"
-os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
-app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
-
-# ── Device ───────────────────────────────────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Activated device:", device)
 model_path = "utils/model/model.pth"
 
 
-# ── Startup ───────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def load_models():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Init async locks (must be created inside the running event loop) ──────
+    state._voice_store_lock = asyncio.Lock()
+
     from langchain_community.embeddings import HuggingFaceEmbeddings
 
     print(f"[{datetime.now()}] Loading HuggingFace embeddings model...")
@@ -89,7 +74,6 @@ async def load_models():
     t0 = time.time()
     try:
         from routers.stt import _get_stt_worker
-        import asyncio
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _get_stt_worker)
         print(f"[{datetime.now()}] STT warmed in {time.time() - t0:.2f}s")
@@ -97,6 +81,27 @@ async def load_models():
         print(f"[{datetime.now()}] STT warmup failed (non-fatal): {e}")
 
     print(f"[{datetime.now()}] Startup complete. All models ready.")
+
+    yield  # ── Application runs ──────────────────────────────────────────────
+
+
+app = FastAPI(
+    title="Intelligent Document & Web API",
+    description="RAG pipeline with Groq + Qwen3-TTS speech + Moonshine STT.",
+    version="2.1.0",
+    lifespan=lifespan,
+)
+
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(rag.router)
+app.include_router(tts.router)
+app.include_router(stt.router)
+app.include_router(ws.router)
+
+# ── Static files ──────────────────────────────────────────────────────────────
+STATIC_AUDIO_DIR = "generated_audio"
+os.makedirs(STATIC_AUDIO_DIR, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=STATIC_AUDIO_DIR), name="audio")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -108,11 +113,6 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
-
-
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
 
 
 # ── Audio-to-blendshapes ──────────────────────────────────────────────────────
