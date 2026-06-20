@@ -81,8 +81,6 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         self,
         rag_chain,
         question: str,
-        voice_preset: Optional[str] = None,
-        tts_instruct: Optional[str] = None,
         voice_clone_prompt=None,
         return_audio: bool = True,
         chunk_ms: Optional[int] = None,
@@ -99,7 +97,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         print(f"[{datetime.now()}] [Kyutai] Pipeline start return_audio={return_audio} chunk_ms={self._chunk_ms}")
 
         llm_task        = asyncio.create_task(self._llm_stage(rag_chain, question))
-        tts_task        = asyncio.create_task(self._tts_stage(voice_preset, tts_instruct))
+        tts_task        = asyncio.create_task(self._tts_stage())
         blendshape_task = asyncio.create_task(self._blendshape_stage(return_audio))
         interrupt_task  = asyncio.create_task(self._listen_for_interrupts())
         monitor_task    = asyncio.create_task(self._monitor_buffer_health())

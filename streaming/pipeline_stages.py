@@ -53,7 +53,7 @@ class PipelineStagesMixin:
 
     # ── Stage 2: TTS ─────────────────────────────────────────────────────────
 
-    async def _tts_stage(self, voice_preset: Optional[str], tts_instruct: Optional[str]):
+    async def _tts_stage(self):
         sentence_idx = 0
         max_retries = 2
         print(f"[{datetime.now()}] [Kyutai TTS] Stage start")
@@ -94,7 +94,7 @@ class PipelineStagesMixin:
                     try:
                         audio_chunk = await self.tts.process_sentence(
                             sentence, sentence_idx, self._cumulative_audio_time,
-                            voice_preset, tts_instruct, self._voice_clone_prompt,
+                            voice_clone_prompt=self._voice_clone_prompt,
                         )
                         if audio_chunk:
                             break

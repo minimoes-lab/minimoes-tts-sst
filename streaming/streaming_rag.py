@@ -195,6 +195,8 @@ async def streaming_rag_query(
         return
 
     # --- RAG mode ---
+    if not hasattr(chain, "retriever"):
+        raise ValueError(f"Session type not supported: {type(chain).__name__}. Expected ConversationalRetrievalChain or direct dict.")
     retriever = chain.retriever
     docs = await retriever.ainvoke(question)
 

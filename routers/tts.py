@@ -62,15 +62,18 @@ async def set_tts_reference_audio(
     if filename and not filename.endswith(".wav"):
         raise HTTPException(status_code=400, detail="Reference audio must be a .wav file")
 
+    MAX_SIZE = 50 * 1024 * 1024  # 50 MB
     base_dir = os.path.dirname(os.path.abspath(__file__))
     ref_dir = os.path.join(base_dir, "..", "tts_reference")
     os.makedirs(ref_dir, exist_ok=True)
     ref_path = os.path.join(ref_dir, f"ref_{uuid.uuid4().hex}.wav")
 
     try:
-        content = await audio.read()
+        content = await audio.read(MAX_SIZE + 1)
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file")
+        if len(content) > MAX_SIZE:
+            raise HTTPException(status_code=413, detail="Audio file too large. Maximum 50 MB.")
         with open(ref_path, "wb") as f:
             f.write(content)
     finally:

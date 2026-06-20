@@ -5,7 +5,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 import core.state as state
 from streaming.performance_monitor import get_monitor
-from streaming.blendshape_worker import BlendshapeWorker
 from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
 from streaming.kyutai_coordinator import KyutaiStreamCoordinator
 from utils.config import config
@@ -38,11 +37,8 @@ async def websocket_infer_kyutai(websocket: WebSocket):
 
         session_id  = init_msg.get("session_id")
         question    = init_msg.get("question")
-        voice_preset   = init_msg.get("voice_preset")
-        tts_instruct   = init_msg.get("tts_instruct")
         voice_id       = init_msg.get("voice_id") or "default"
         return_audio   = init_msg.get("return_audio", True)
-        use_optimized_bs = init_msg.get("use_optimized_bs", True)
         chunk_ms       = init_msg.get("chunk_ms")
 
         if not session_id or not question:
@@ -78,11 +74,7 @@ async def websocket_infer_kyutai(websocket: WebSocket):
             return
 
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        bs_worker = (
-            OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)
-            if use_optimized_bs
-            else BlendshapeWorker(state.blendshape_model, device_str, config)
-        )
+        bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)
 
         coordinator = KyutaiStreamCoordinator(
             websocket=websocket,
@@ -94,8 +86,6 @@ async def websocket_infer_kyutai(websocket: WebSocket):
         await coordinator.run_streaming_pipeline(
             rag_chain=chain,
             question=question,
-            voice_preset=voice_preset,
-            tts_instruct=tts_instruct,
             voice_clone_prompt=voice_prompt,
             return_audio=return_audio,
             chunk_ms=chunk_ms,

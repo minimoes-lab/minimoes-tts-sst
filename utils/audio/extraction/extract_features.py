@@ -191,16 +191,6 @@ def load_audio_from_bytes(audio_bytes, sr=88200):
 
     return y, sr
 
-def load_audio_file_from_memory(audio_bytes, sr=88200):
-    """Load audio from memory bytes."""
-    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=sr)
-    print(f"Loaded audio data with sample rate {sr}")
-    
-    max_val = np.max(np.abs(y))
-    if max_val > 0:
-        y = y / max_val
-
-    return y, sr
 
 
 

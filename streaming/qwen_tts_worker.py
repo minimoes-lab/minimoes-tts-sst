@@ -38,8 +38,6 @@ class QwenTTSWorker:
     def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None, reference_text: Optional[str] = None, raise_on_error: bool = False):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.model = None
-        self.tokenizer = None
-        self.processor = None
         self.sr = 24000
         self._cancelled = False
         self.use_qwen3 = use_qwen3
@@ -251,21 +249,17 @@ class QwenTTSWorker:
         sentence: str,
         sentence_index: int,
         cumulative_time: float,
-        voice_preset: Optional[str] = None,
-        tts_instruct: Optional[str] = None,
         voice_clone_prompt=None,
     ) -> Optional[AudioChunk]:
         """Generate full audio for a single sentence (fallback path)."""
         if self._cancelled:
             return None
-        
+
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
             self._generate_audio_sync,
             sentence,
-            voice_preset,
-            tts_instruct,
             voice_clone_prompt,
         )
         
@@ -287,8 +281,6 @@ class QwenTTSWorker:
     def _generate_audio_sync(
         self,
         text: str,
-        voice_preset: Optional[str],
-        tts_instruct: Optional[str],
         voice_clone_prompt=None,
     ) -> Optional[Tuple[np.ndarray, bytes]]:
         """Synchronous audio generation with Qwen3-TTS (Base voice-clone fallback)."""
