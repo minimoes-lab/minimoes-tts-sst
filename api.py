@@ -63,6 +63,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Init async primitives (must be inside running event loop) ────────────
+    loop = asyncio.get_running_loop()
     state._voice_store_lock = asyncio.Lock()
     # Limit concurrent GPU pipelines — each ws/infer/kyutai runs LLM+TTS+BS in parallel.
     # More than 3 simultaneous pipelines saturates the GPU and causes OOM / latency spikes.
@@ -78,20 +79,39 @@ async def lifespan(app: FastAPI):
     )
     print(f"[{datetime.now()}] Embeddings loaded in {time.time() - t0:.2f}s")
 
+    def _download_model():
+        import urllib.request
+        url = "https://huggingface.co/KKKONNK/model/resolve/main/model.pth"
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        tmp_path = model_path + ".tmp"
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Download failed: HTTP {resp.status}")
+                data = resp.read()
+            if len(data) < 1_000_000:
+                raise RuntimeError(f"Downloaded file too small ({len(data)} bytes) — likely an error page, not the model.")
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+            os.replace(tmp_path, model_path)
+            print(f"[{datetime.now()}] Blendshape model downloaded ({os.path.getsize(model_path):,} bytes).")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
     model_size = os.path.getsize(model_path) if os.path.exists(model_path) else 0
     if model_size < 1_000_000:
         print(f"[{datetime.now()}] Blendshape model missing or invalid (size={model_size}), downloading...")
-        import urllib.request
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        urllib.request.urlretrieve(
-            "https://huggingface.co/KKKONNK/model/resolve/main/model.pth",
-            model_path,
-        )
-        print(f"[{datetime.now()}] Blendshape model downloaded ({os.path.getsize(model_path)} bytes).")
+        await loop.run_in_executor(None, _download_model)
 
     print(f"[{datetime.now()}] Loading blendshape model from {model_path}...")
-    loop = asyncio.get_running_loop()
-    state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, device)
+    try:
+        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, device)
+    except Exception as e:
+        print(f"[{datetime.now()}] Blendshape model corrupted ({e}), deleting and re-downloading...")
+        os.remove(model_path)
+        await loop.run_in_executor(None, _download_model)
+        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, device)
 
     # torch.compile() can take 30s+ — run once here at startup, never inside a request handler
     enable_compile = os.getenv("ENABLE_TORCH_COMPILE", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -119,7 +139,6 @@ async def lifespan(app: FastAPI):
     t0 = time.time()
     try:
         from routers.stt import _get_stt_worker
-        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _get_stt_worker)
         print(f"[{datetime.now()}] STT warmed in {time.time() - t0:.2f}s")
     except Exception as e:
