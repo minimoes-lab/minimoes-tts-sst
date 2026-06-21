@@ -243,7 +243,10 @@ class PipelineStagesMixin:
 
                 except Exception as e:
                     print(f"[{datetime.now()}] [Kyutai BS] Buffer error: {e}")
-                    await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
+                    try:
+                        await self._send_fallback_frames(bs_chunk_idx, audio_chunk)
+                    except Exception:
+                        break
                     bs_chunk_idx += 1
 
             # Final flush
@@ -291,6 +294,9 @@ class PipelineStagesMixin:
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai BS] ERROR: {repr(e)}")
             import traceback; traceback.print_exc()
-            await self._handle_error("blendshape", e)
+            try:
+                await self._handle_error("blendshape", e)
+            except Exception:
+                pass
         finally:
             print(f"[{datetime.now()}] [Kyutai BS] Stage end")

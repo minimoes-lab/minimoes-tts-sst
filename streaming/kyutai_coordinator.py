@@ -114,16 +114,22 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
             pass
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai] Pipeline error: {repr(e)}")
-            await self._send_status("error", str(e))
+            try:
+                await self._send_status("error", str(e))
+            except Exception:
+                pass
         finally:
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            if self._cancelled:
-                await self._send_idle_transition()
-                await self._send_status("interrupted", "Generation interrupted")
-            else:
-                await self._send_status("complete", "Generation complete")
+            try:
+                if self._cancelled:
+                    await self._send_idle_transition()
+                    await self._send_status("interrupted", "Generation interrupted")
+                else:
+                    await self._send_status("complete", "Generation complete")
+            except Exception:
+                pass
             print(f"[{datetime.now()}] [Kyutai] Pipeline end cancelled={self._cancelled}")
 
     # ── Control messages ──────────────────────────────────────────────────────
