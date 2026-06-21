@@ -42,7 +42,9 @@ class TransportMixin:
             return chunk_idx
 
         if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
-            audio_np = audio_np[:, 0]
+            audio_np = audio_np.squeeze()
+            if audio_np.ndim > 1:
+                audio_np = audio_np[:, 0]
 
         audio_np = audio_np.astype(np.float32, copy=False)
         audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)

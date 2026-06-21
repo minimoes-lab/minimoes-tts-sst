@@ -30,16 +30,19 @@ class PipelineStagesMixin:
             async for token in streaming_rag_query(rag_chain, question):
                 if self._cancelled:
                     break
+                # Forward every token immediately so the UI updates word-by-word.
+                # Sentence boundaries are tracked separately for TTS chunking.
+                if token:
+                    await self.ws.send_json(make_text_chunk_msg(self._sentence_index, token, is_final=False))
                 sentences = self.sentence_buffer.add_token(token or "")
                 for sentence in sentences:
-                    await self.ws.send_json(make_text_chunk_msg(self._sentence_index, sentence, is_final=False))
                     await self._sentence_queue.put(sentence)
                     self._sentence_index += 1
 
             if not self._cancelled:
                 remaining = self.sentence_buffer.flush()
                 if remaining:
-                    await self.ws.send_json(make_text_chunk_msg(self._sentence_index, remaining, is_final=True))
+                    # Tokens already sent above — only queue for TTS.
                     await self._sentence_queue.put(remaining)
                     self._sentence_index += 1
 
@@ -182,7 +185,9 @@ class PipelineStagesMixin:
             sentence_index = int(bs_buf_sentence_index or 0)
 
             if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
-                audio_np = audio_np[:, 0]
+                audio_np = audio_np.squeeze()
+                if audio_np.ndim > 1:
+                    audio_np = audio_np[:, 0]
 
             audio_np_f32 = audio_np.astype(np.float32, copy=False)
             audio_int16 = (np.clip(audio_np_f32, -1.0, 1.0) * 32767.0).astype(np.int16)
@@ -261,7 +266,9 @@ class PipelineStagesMixin:
                         continue
 
                     if hasattr(audio_np, "ndim") and audio_np.ndim > 1:
-                        audio_np = audio_np[:, 0]
+                        audio_np = audio_np.squeeze()
+                        if audio_np.ndim > 1:
+                            audio_np = audio_np[:, 0]
 
                     if (bs_buf_sentence_index is not None
                             and int(audio_chunk.sentence_index) != int(bs_buf_sentence_index)):
