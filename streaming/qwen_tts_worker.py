@@ -129,7 +129,7 @@ class QwenTTSWorker:
                         self.model.enable_streaming_optimizations(
                             decode_window_frames=80,
                             use_compile=True,
-                            use_cuda_graphs=False,  # reduce-overhead already captures CUDA graphs; enabling both causes nested-graph RuntimeError
+                            use_cuda_graphs=True,
                             compile_mode="reduce-overhead",
                             use_fast_codebook=False,
                             compile_codebook_predictor=True,
@@ -196,7 +196,7 @@ class QwenTTSWorker:
                                     text=wtext,
                                     language="English",
                                     voice_clone_prompt=warmup_prompt,
-                                    emit_every_frames=12,
+                                    emit_every_frames=8,
                                     decode_window_frames=80,
                                     overlap_samples=512,
                                     first_chunk_emit_every=5,
@@ -249,7 +249,7 @@ class QwenTTSWorker:
         cumulative_time: float,
         language: str = "English",
         voice_clone_prompt=None,
-        emit_every_frames: int = 12,
+        emit_every_frames: int = 8,
         decode_window_frames: int = 80,
         overlap_samples: int = 512,
         first_chunk_emit_every: int = 5,
@@ -357,8 +357,18 @@ class QwenTTSWorker:
                 dur = float(chunk.shape[0] / sr) if sr else 0.0
 
                 if chunk_count == 1:
-                    print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {time.time()-start_time:.2f}s, "
-                          f"flat shape={chunk.shape} dur={dur:.3f}s")
+                    elapsed_first = time.time() - start_time
+                    print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {elapsed_first:.2f}s, "
+                          f"flat shape={chunk.shape} dur={dur:.3f}s "
+                          f"RTF={elapsed_first/dur:.2f}x" if dur > 0 else f"flat shape={chunk.shape}")
+
+                if chunk_count > 1:
+                    elapsed_total = time.time() - start_time
+                    rtf_running = elapsed_total / generated_duration if generated_duration > 0 else 0.0
+                    if chunk_count <= 8 or chunk_count % 10 == 0:
+                        print(f"[{datetime.now()}] [Qwen TTS stream] chunk#{chunk_count} "
+                              f"dur={dur:.3f}s generated={generated_duration:.2f}s elapsed={elapsed_total:.2f}s "
+                              f"RTF={rtf_running:.2f}x")
 
                 yield AudioChunk(
                     sentence_index=sentence_index,
