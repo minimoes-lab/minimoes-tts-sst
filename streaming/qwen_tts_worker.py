@@ -35,6 +35,12 @@ class QwenTTSWorker:
     _shared_default_speaker = None
     _shared_loaded_device = None
     _shared_model_loaded = False
+    # Single persistent thread for all GPU inference.
+    # torch.compile(mode='reduce-overhead') stores CUDA graph state in thread-local
+    # storage (TLS). Creating a new ThreadPoolExecutor per request spawns a new thread
+    # that has no TLS state → AssertionError on the 2nd request.  Reusing the same
+    # executor guarantees all inference (warmup + runtime) runs on the same thread.
+    _shared_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     
     def __init__(self, device="cuda", use_qwen3=True, reference_audio_path=None, reference_text: Optional[str] = None, raise_on_error: bool = False):
         self.device = device if torch.cuda.is_available() else "cpu"
@@ -131,22 +137,38 @@ class QwenTTSWorker:
                     ref_text=self.reference_text,
                 )
 
+            # Create the shared persistent executor now (before warmup) so that
+            # warmup JIT-compiles CUDA graphs on the SAME thread that all future
+            # inference calls will use.  This must happen exactly once.
+            with self.__class__._shared_lock:
+                if self.__class__._shared_executor is None:
+                    self.__class__._shared_executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix="qwen_tts_gpu",
+                    )
+                    # Eagerly initialise the thread so it exists before warmup.
+                    self.__class__._shared_executor.submit(lambda: None).result()
+
             if (not reuse_shared) and self.device == "cuda":
                 try:
                     if self.voice_clone_prompt is not None:
-                        for wtext in ["Hello.", "This is a warmup."]:
-                            for _chunk, _sr in self.model.stream_generate_voice_clone(
-                                text=wtext,
-                                language="English",
-                                voice_clone_prompt=self.voice_clone_prompt,
-                                emit_every_frames=12,
-                                decode_window_frames=80,
-                                overlap_samples=512,
-                                first_chunk_emit_every=5,
-                                first_chunk_decode_window=48,
-                                first_chunk_frames=48,
-                            ):
-                                pass  # consume fully to ensure complete graph capture
+                        def _warmup():
+                            for wtext in ["Hello.", "This is a warmup."]:
+                                for _chunk, _sr in self.model.stream_generate_voice_clone(
+                                    text=wtext,
+                                    language="English",
+                                    voice_clone_prompt=self.voice_clone_prompt,
+                                    emit_every_frames=12,
+                                    decode_window_frames=80,
+                                    overlap_samples=512,
+                                    first_chunk_emit_every=5,
+                                    first_chunk_decode_window=48,
+                                    first_chunk_frames=48,
+                                ):
+                                    pass  # consume fully to ensure complete graph capture
+                        # Run warmup on the persistent thread so CUDA graphs are
+                        # recorded on the exact thread that will serve all requests.
+                        self.__class__._shared_executor.submit(_warmup).result()
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup complete")
                 except Exception as warmup_err:
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup skipped: {warmup_err}")
@@ -245,7 +267,20 @@ class QwenTTSWorker:
             finally:
                 asyncio.run_coroutine_threadsafe(q.put(_SENTINEL), loop).result()
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Reuse the class-level persistent executor so every inference call runs
+        # on the same background thread where CUDA graphs were compiled during warmup.
+        executor = self.__class__._shared_executor
+        if executor is None:
+            # Fallback: executor not yet created (model loaded without warmup path).
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="qwen_tts_gpu"
+            )
+            executor.submit(lambda: None).result()
+            with self.__class__._shared_lock:
+                if self.__class__._shared_executor is None:
+                    self.__class__._shared_executor = executor
+                else:
+                    executor = self.__class__._shared_executor
         fut = loop.run_in_executor(executor, _run_sync)
 
         t_cursor = float(cumulative_time)
@@ -288,7 +323,7 @@ class QwenTTSWorker:
         finally:
             _stop_event.set()
             await fut
-            executor.shutdown(wait=False)
+            # Do NOT shut down the shared executor — it must stay alive for future requests.
 
         total_elapsed = time.time() - start_time
         print(f"[{datetime.now()}] [Qwen TTS stream] Completed {chunk_count} chunks in {total_elapsed:.2f}s ({generated_duration:.2f}s audio)")
