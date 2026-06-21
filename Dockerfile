@@ -23,14 +23,11 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 
-# Install flash-attn via prebuilt wheel (no CUDA headers needed at build time —
-# the wheel ships its own CUDA kernels compiled for sm_80/sm_86/sm_89/sm_90).
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir qwen-tts \
-    && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2" \
-    && pip install --no-cache-dir "flash-attn==2.8.0.post2" --find-links https://github.com/Dao-AILab/flash-attention/releases/expanded_assets/v2.8.0.post2
+    && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2"
 
 COPY . /app
 
@@ -40,10 +37,11 @@ RUN mkdir -p utils/model
 RUN mkdir -p /app/generated_audio /app/demo_outputs
 
 RUN chmod +x /app/*.py || true
+RUN chmod +x /app/start.sh
 
 EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", "--timeout-keep-alive", "300"]
+CMD ["/app/start.sh"]
