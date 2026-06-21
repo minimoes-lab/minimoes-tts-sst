@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.9.2-cudnn-devel-ubuntu22.04
+FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
@@ -6,15 +6,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=100 \
     NUMBA_DISABLE_CACHE=1 \
     TOKENIZERS_PARALLELISM=false \
-    PYTHONDONTWRITEBYTECODE=1 \
-    DEBIAN_FRONTEND=noninteractive
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
-    python3-pip \
     build-essential \
     wget \
     git \
@@ -23,18 +19,18 @@ RUN apt-get update && apt-get install -y \
     sox \
     libsox-fmt-all \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.10 /usr/local/bin/python \
-    && ln -sf /usr/bin/python3.10 /usr/local/bin/python3
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
+# Install flash-attn via prebuilt wheel (no CUDA headers needed at build time —
+# the wheel ships its own CUDA kernels compiled for sm_80/sm_86/sm_89/sm_90).
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir qwen-tts \
     && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2" \
-    && pip install --no-cache-dir flash-attn --no-build-isolation
+    && pip install --no-cache-dir "flash-attn==2.8.0.post2" --find-links https://github.com/Dao-AILab/flash-attention/releases/expanded_assets/v2.8.0.post2
 
 COPY . /app
 
