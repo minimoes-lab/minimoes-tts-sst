@@ -52,7 +52,18 @@ class PipelineStagesMixin:
                 pass
         finally:
             print(f"[{datetime.now()}] [Kyutai LLM] Stage end")
-            await self._sentence_queue.put(None)
+            try:
+                self._sentence_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                # Queue is full; drain one item to make room, then push sentinel
+                try:
+                    self._sentence_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    self._sentence_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
 
     # ── Stage 2: TTS ─────────────────────────────────────────────────────────
 
@@ -125,7 +136,17 @@ class PipelineStagesMixin:
                 pass
         finally:
             print(f"[{datetime.now()}] [Kyutai TTS] Stage end")
-            await self._audio_queue.put(None)
+            try:
+                self._audio_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    self._audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    self._audio_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
 
     # ── Stage 3: Blendshapes ──────────────────────────────────────────────────
 
@@ -270,41 +291,50 @@ class PipelineStagesMixin:
 
             # Flush delayed visual stream
             for bs_chunk in self.visual_stream.flush():
-                await self.ws.send_json(make_blendshapes_msg(
-                    chunk_index=bs_chunk_idx,
-                    sentence_index=bs_chunk.sentence_index,
-                    frames=bs_chunk.frames.tolist(),
-                    start_time=bs_chunk.start_time,
-                    end_time=bs_chunk.end_time,
-                    frame_rate=bs_chunk.frame_rate,
-                    is_final=False,
-                ))
+                try:
+                    await self.ws.send_json(make_blendshapes_msg(
+                        chunk_index=bs_chunk_idx,
+                        sentence_index=bs_chunk.sentence_index,
+                        frames=bs_chunk.frames.tolist(),
+                        start_time=bs_chunk.start_time,
+                        end_time=bs_chunk.end_time,
+                        frame_rate=bs_chunk.frame_rate,
+                        is_final=False,
+                    ))
+                except Exception:
+                    break
                 bs_chunk_idx += 1
 
             if not self._cancelled:
-                await self.ws.send_json(make_audio_chunk_msg(
-                    chunk_index=audio_chunk_idx,
-                    sentence_index=max(0, self._sentence_index - 1),
-                    audio_base64="",
-                    start_time=self._cumulative_audio_time,
-                    end_time=self._cumulative_audio_time,
-                    sample_rate=self.tts.sr or 24000,
-                    audio_format="pcm_s16le",
-                    channels=1,
-                    is_final=True,
-                ))
-                await self.ws.send_json(make_blendshapes_msg(
-                    chunk_index=bs_chunk_idx,
-                    sentence_index=max(0, self._sentence_index - 1),
-                    frames=(
-                        [self._last_successful_frame.tolist()]
-                        if self._last_successful_frame is not None else []
-                    ),
-                    start_time=self._cumulative_audio_time,
-                    end_time=self._cumulative_audio_time,
-                    frame_rate=60,
-                    is_final=True,
-                ))
+                try:
+                    await self.ws.send_json(make_audio_chunk_msg(
+                        chunk_index=audio_chunk_idx,
+                        sentence_index=max(0, self._sentence_index - 1),
+                        audio_base64="",
+                        start_time=self._cumulative_audio_time,
+                        end_time=self._cumulative_audio_time,
+                        sample_rate=self.tts.sr or 24000,
+                        audio_format="pcm_s16le",
+                        channels=1,
+                        is_final=True,
+                    ))
+                except Exception:
+                    pass
+                try:
+                    await self.ws.send_json(make_blendshapes_msg(
+                        chunk_index=bs_chunk_idx,
+                        sentence_index=max(0, self._sentence_index - 1),
+                        frames=(
+                            [self._last_successful_frame.tolist()]
+                            if self._last_successful_frame is not None else []
+                        ),
+                        start_time=self._cumulative_audio_time,
+                        end_time=self._cumulative_audio_time,
+                        frame_rate=60,
+                        is_final=True,
+                    ))
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai BS] ERROR: {repr(e)}")

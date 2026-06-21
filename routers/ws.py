@@ -98,18 +98,18 @@ async def websocket_infer_kyutai(
             await websocket.close()
             return
 
-        # Enforce GPU concurrency limit — reject immediately if all slots are taken
-        if state._gpu_semaphore is not None and state._gpu_semaphore.locked():
-            slots = int(os.getenv("MAX_CONCURRENT_PIPELINES", "3"))
-            if state._gpu_semaphore._value == 0:  # type: ignore[attr-defined]
-                await websocket.send_json({
-                    "type": "status", "status": "error",
-                    "message": f"Server busy: max {slots} concurrent sessions. Try again shortly."
-                })
-                await websocket.close()
-                return
-
+        # Enforce GPU concurrency limit — reject immediately if all slots are taken.
+        # sem.locked() is True when _value == 0 (no slots available).
         sem = state._gpu_semaphore
+        if sem is not None and sem.locked():
+            slots = int(os.getenv("MAX_CONCURRENT_PIPELINES", "3"))
+            await websocket.send_json({
+                "type": "status", "status": "error",
+                "message": f"Server busy: max {slots} concurrent sessions. Try again shortly."
+            })
+            await websocket.close()
+            return
+
         async with (sem if sem is not None else asyncio.Semaphore(999)):
             device_str = "cuda" if torch.cuda.is_available() else "cpu"
             bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)

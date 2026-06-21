@@ -107,8 +107,10 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
+                if task in (interrupt_task, monitor_task):
+                    continue
                 exc = task.exception()
-                if exc and task not in (interrupt_task, monitor_task):
+                if exc:
                     raise exc
         except asyncio.CancelledError:
             pass
@@ -119,15 +121,34 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
             except Exception:
                 pass
         finally:
+            # Cancel all tasks
             for task in tasks:
                 if not task.done():
                     task.cancel()
+            # Drain queues so blocked put() calls in finally blocks can unblock
+            for q in (self._sentence_queue, self._audio_queue):
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+            # Now await cancellation so finally blocks in each stage run to completion
+            await asyncio.gather(*tasks, return_exceptions=True)
             try:
                 if self._cancelled:
-                    await self._send_idle_transition()
-                    await self._send_status("interrupted", "Generation interrupted")
+                    try:
+                        await self._send_idle_transition()
+                    except Exception:
+                        pass
+                    try:
+                        await self._send_status("interrupted", "Generation interrupted")
+                    except Exception:
+                        pass
                 else:
-                    await self._send_status("complete", "Generation complete")
+                    try:
+                        await self._send_status("complete", "Generation complete")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             print(f"[{datetime.now()}] [Kyutai] Pipeline end cancelled={self._cancelled}")

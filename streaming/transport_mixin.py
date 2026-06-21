@@ -93,17 +93,20 @@ class TransportMixin:
             return
         num_frames = int(audio_chunk.duration * 60)
         frames = np.tile(self._last_successful_frame, (num_frames, 1))
-        await self.ws.send_json(
-            make_blendshapes_msg(
-                chunk_index=chunk_idx,
-                sentence_index=audio_chunk.sentence_index,
-                frames=frames.tolist(),
-                start_time=audio_chunk.start_time,
-                end_time=audio_chunk.start_time + audio_chunk.duration,
-                frame_rate=60,
-                is_final=False,
+        try:
+            await self.ws.send_json(
+                make_blendshapes_msg(
+                    chunk_index=chunk_idx,
+                    sentence_index=audio_chunk.sentence_index,
+                    frames=frames.tolist(),
+                    start_time=audio_chunk.start_time,
+                    end_time=audio_chunk.start_time + audio_chunk.duration,
+                    frame_rate=60,
+                    is_final=False,
+                )
             )
-        )
+        except Exception:
+            pass
 
     async def _send_idle_transition(self):
         idle_frames = generate_idle_frames(
