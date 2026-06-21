@@ -339,12 +339,26 @@ class QwenTTSWorker:
                 chunk, sr = item
                 if isinstance(chunk, torch.Tensor):
                     chunk = chunk.cpu().numpy()
-                chunk = chunk.astype(np.float32)
-                dur = float(len(chunk) / sr) if sr else 0.0
 
+                # Log raw shape/dtype/range on first 3 chunks for diagnostics
                 chunk_count += 1
+                if chunk_count <= 3:
+                    print(f"[{datetime.now()}] [Qwen TTS stream] raw chunk#{chunk_count} "
+                          f"shape={chunk.shape} dtype={chunk.dtype} "
+                          f"min={float(chunk.min()):.4f} max={float(chunk.max()):.4f} sr={sr}")
+
+                # Flatten to 1-D — the decoder can return (1,N) or (N,) or (2,N)
+                if chunk.ndim > 1:
+                    chunk = chunk.squeeze()
+                    if chunk.ndim > 1:
+                        chunk = chunk[0]  # take first channel
+
+                chunk = chunk.astype(np.float32)
+                dur = float(chunk.shape[0] / sr) if sr else 0.0
+
                 if chunk_count == 1:
-                    print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {time.time()-start_time:.2f}s")
+                    print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {time.time()-start_time:.2f}s, "
+                          f"flat shape={chunk.shape} dur={dur:.3f}s")
 
                 yield AudioChunk(
                     sentence_index=sentence_index,
