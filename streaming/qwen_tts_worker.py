@@ -115,6 +115,16 @@ class QwenTTSWorker:
             if (not reuse_shared) and self.device == "cuda":
                 print(f"[{datetime.now()}] [Qwen TTS] Enabling 6x streaming optimizations...")
                 try:
+                    # After warmup we will have pre-compiled graphs for all common input
+                    # sizes.  Tell the inductor to skip recording new graphs for any
+                    # unseen size at runtime — fall back to eager instead of adding
+                    # latency on the first call with an unexpected shape.
+                    try:
+                        import torch._inductor.config as _ic
+                        _ic.triton.cudagraph_skip_dynamic_graphs = True
+                    except Exception:
+                        pass
+
                     if hasattr(self.model, "enable_streaming_optimizations"):
                         self.model.enable_streaming_optimizations(
                             decode_window_frames=80,
@@ -151,13 +161,41 @@ class QwenTTSWorker:
 
             if (not reuse_shared) and self.device == "cuda":
                 try:
-                    if self.voice_clone_prompt is not None:
+                    warmup_prompt = self.voice_clone_prompt
+
+                    # If no real reference audio yet, build a synthetic one (1s of silence)
+                    # so the JIT compilation and CUDA graph recording happen at startup,
+                    # not on the first real user request (which would add 30s+ latency).
+                    if warmup_prompt is None and hasattr(self.model, "create_voice_clone_prompt"):
+                        try:
+                            import tempfile, struct
+                            _sr_w = 24000
+                            _n_w  = _sr_w  # 1 second of silence
+                            _wav_header = struct.pack(
+                                "<4sI4s4sIHHIIHH4sI",
+                                b"RIFF", 36 + _n_w * 2, b"WAVE",
+                                b"fmt ", 16, 1, 1, _sr_w, _sr_w * 2, 2, 16,
+                                b"data", _n_w * 2,
+                            )
+                            _wav_data = b"\x00" * (_n_w * 2)
+                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as _f:
+                                _f.write(_wav_header + _wav_data)
+                                _syn_path = _f.name
+                            warmup_prompt = self.model.create_voice_clone_prompt(
+                                ref_audio=_syn_path,
+                                ref_text="Hello, this is a warmup.",
+                            )
+                            print(f"[{datetime.now()}] [Qwen TTS] Synthetic warmup prompt created")
+                        except Exception as _we:
+                            print(f"[{datetime.now()}] [Qwen TTS] Synthetic warmup prompt failed: {_we}")
+
+                    if warmup_prompt is not None:
                         def _warmup():
                             for wtext in ["Hello.", "This is a warmup."]:
                                 for _chunk, _sr in self.model.stream_generate_voice_clone(
                                     text=wtext,
                                     language="English",
-                                    voice_clone_prompt=self.voice_clone_prompt,
+                                    voice_clone_prompt=warmup_prompt,
                                     emit_every_frames=12,
                                     decode_window_frames=80,
                                     overlap_samples=512,
@@ -169,9 +207,11 @@ class QwenTTSWorker:
                         # Run warmup on the persistent thread so CUDA graphs are
                         # recorded on the exact thread that will serve all requests.
                         self.__class__._shared_executor.submit(_warmup).result()
-                    print(f"[{datetime.now()}] [Qwen TTS] Warmup complete")
+                        print(f"[{datetime.now()}] [Qwen TTS] Warmup complete (CUDA graphs recorded)")
+                    else:
+                        print(f"[{datetime.now()}] [Qwen TTS] Warmup skipped (no prompt available)")
                 except Exception as warmup_err:
-                    print(f"[{datetime.now()}] [Qwen TTS] Warmup skipped: {warmup_err}")
+                    print(f"[{datetime.now()}] [Qwen TTS] Warmup error: {warmup_err}")
             
             self.sr = 24000  # Qwen3-TTS uses 24kHz
             self.model_loaded = True
