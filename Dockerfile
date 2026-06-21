@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM nvidia/cuda:12.8.0-cudnn9-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
@@ -6,11 +6,15 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=100 \
     NUMBA_DISABLE_CACHE=1 \
     TOKENIZERS_PARALLELISM=false \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
     build-essential \
     wget \
     git \
@@ -19,7 +23,9 @@ RUN apt-get update && apt-get install -y \
     sox \
     libsox-fmt-all \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.10 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.10 /usr/local/bin/python3
 
 COPY requirements.txt .
 
@@ -27,7 +33,8 @@ RUN pip install --upgrade pip \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir qwen-tts \
-    && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2"
+    && pip install --no-cache-dir "transformers==4.57.3" "tokenizers==0.22.2" "huggingface-hub==0.36.2" \
+    && pip install --no-cache-dir flash-attn --no-build-isolation
 
 COPY . /app
 

@@ -15,6 +15,9 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 import torch
 
+# Use TensorFloat32 cores for float32 matrix multiplications — free ~15% speedup on Ampere+
+torch.set_float32_matmul_precision('high')
+
 
 @dataclass
 class AudioChunk:
