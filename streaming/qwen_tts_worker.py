@@ -6,6 +6,7 @@ import asyncio
 import io
 import time
 import threading
+import concurrent.futures
 from dataclasses import dataclass
 from datetime import datetime
 from typing import AsyncGenerator, Optional, Tuple
@@ -112,11 +113,10 @@ class QwenTTSWorker:
                         self.model.enable_streaming_optimizations(
                             decode_window_frames=80,
                             use_compile=True,
-                            use_cuda_graphs=False,  # Disabled for stability
+                            use_cuda_graphs=False,  # reduce-overhead already captures CUDA graphs; enabling both causes nested-graph RuntimeError
                             compile_mode="reduce-overhead",
-                            use_fast_codebook=True,
+                            use_fast_codebook=False,
                             compile_codebook_predictor=True,
-                            compile_talker=True,
                         )
                         print(f"[{datetime.now()}] [Qwen TTS] Two-phase streaming optimizations enabled")
                     else:
@@ -133,17 +133,20 @@ class QwenTTSWorker:
 
             if (not reuse_shared) and self.device == "cuda":
                 try:
-                    warmup_texts = [
-                        "Hello.",
-                        "This is a warmup.",
-                    ]
                     if self.voice_clone_prompt is not None:
-                        for wtext in warmup_texts:
-                            _ = self.model.generate_voice_clone(
+                        for wtext in ["Hello.", "This is a warmup."]:
+                            for _chunk, _sr in self.model.stream_generate_voice_clone(
                                 text=wtext,
                                 language="English",
                                 voice_clone_prompt=self.voice_clone_prompt,
-                            )
+                                emit_every_frames=12,
+                                decode_window_frames=80,
+                                overlap_samples=512,
+                                first_chunk_emit_every=5,
+                                first_chunk_decode_window=48,
+                                first_chunk_frames=48,
+                            ):
+                                pass  # consume fully to ensure complete graph capture
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup complete")
                 except Exception as warmup_err:
                     print(f"[{datetime.now()}] [Qwen TTS] Warmup skipped: {warmup_err}")
@@ -186,64 +189,109 @@ class QwenTTSWorker:
         voice_clone_prompt=None,
         emit_every_frames: int = 12,
         decode_window_frames: int = 80,
-        overlap_samples: int = 128,
+        overlap_samples: int = 512,
         first_chunk_emit_every: int = 5,
         first_chunk_decode_window: int = 48,
         first_chunk_frames: int = 48,
     ) -> AsyncGenerator[AudioChunk, None]:
-        """Stream PCM chunks for one sentence using Base model voice-clone streaming."""
+        """Stream PCM chunks for one sentence using Base model voice-clone streaming.
+
+        Runs GPU inference in a thread-pool executor so the asyncio event loop
+        stays free for WebSocket sends, interrupt handling, and blendshape work.
+        """
         if self._cancelled:
             return
         if self.model is None or not self.model_loaded:
             return
 
-        prompt = voice_clone_prompt if voice_clone_prompt is not None else self.voice_clone_prompt
+        prompt = voice_clone_prompt
         if prompt is None:
-            raise ValueError("voice_clone_prompt not initialized (missing reference audio/text)")
+            raise ValueError(
+                "voice_clone_prompt must be provided per-request; "
+                "instance-level fallback is unsafe in a shared worker"
+            )
 
-        print(f"[{datetime.now()}] [Qwen TTS stream] Starting stream_generate_voice_clone for sentence {sentence_index}")
-        print(f"[{datetime.now()}] [Qwen TTS stream] Phase 1: first_chunk_emit_every={first_chunk_emit_every}, first_chunk_decode_window={first_chunk_decode_window}")
-        print(f"[{datetime.now()}] [Qwen TTS stream] Phase 2: emit_every_frames={emit_every_frames}, decode_window_frames={decode_window_frames}")
-        
+        print(f"[{datetime.now()}] [Qwen TTS stream] sentence={sentence_index} lang={language!r} "
+              f"first_chunk_emit={first_chunk_emit_every} emit={emit_every_frames} dw={decode_window_frames} overlap={overlap_samples}")
+
+        # Safety cap: 1.5× word-count estimate (2.5 wps), min 3s, hard cap 30s.
+        word_count = max(1, len(sentence.split()))
+        max_duration = min(30.0, max(3.0, word_count / 2.5 * 1.5))
+        print(f"[{datetime.now()}] [Qwen TTS stream] max_duration={max_duration:.1f}s for {word_count} words")
+
+        loop = asyncio.get_running_loop()
+        # maxsize=0 = unbounded; thread never blocks on put(), no deadlock risk.
+        q: asyncio.Queue = asyncio.Queue(maxsize=0)
+        _SENTINEL = object()
+        _stop_event = threading.Event()
+
+        def _run_sync():
+            try:
+                for chunk, sr in self.model.stream_generate_voice_clone(
+                    text=sentence,
+                    language=language,
+                    voice_clone_prompt=prompt,
+                    emit_every_frames=emit_every_frames,
+                    decode_window_frames=decode_window_frames,
+                    overlap_samples=overlap_samples,
+                    first_chunk_emit_every=first_chunk_emit_every,
+                    first_chunk_decode_window=first_chunk_decode_window,
+                    first_chunk_frames=first_chunk_frames,
+                    max_frames=10000,
+                ):
+                    if _stop_event.is_set():
+                        break
+                    asyncio.run_coroutine_threadsafe(q.put((chunk, sr)), loop).result()
+            finally:
+                asyncio.run_coroutine_threadsafe(q.put(_SENTINEL), loop).result()
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = loop.run_in_executor(executor, _run_sync)
+
         t_cursor = float(cumulative_time)
+        generated_duration = 0.0
         chunk_count = 0
         start_time = time.time()
-        
-        for chunk, sr in self.model.stream_generate_voice_clone(
-            text=sentence,
-            language=language,
-            voice_clone_prompt=prompt,
-            emit_every_frames=emit_every_frames,
-            decode_window_frames=decode_window_frames,
-            overlap_samples=overlap_samples,
-            first_chunk_emit_every=first_chunk_emit_every,
-            first_chunk_decode_window=first_chunk_decode_window,
-            first_chunk_frames=first_chunk_frames,
-        ):
-            if self._cancelled:
-                break
-            if isinstance(chunk, torch.Tensor):
-                chunk = chunk.cpu().numpy()
-            chunk = chunk.astype(np.float32)
-            dur = float(len(chunk) / sr) if sr else 0.0
-            
-            chunk_count += 1
-            if chunk_count == 1:
-                elapsed = time.time() - start_time
-                print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {elapsed:.2f}s")
-            
-            yield AudioChunk(
-                sentence_index=sentence_index,
-                audio_bytes=b"",
-                audio_np=chunk,
-                sample_rate=int(sr),
-                start_time=t_cursor,
-                duration=dur,
-            )
-            t_cursor += dur
-        
+
+        try:
+            while True:
+                item = await q.get()
+                if item is _SENTINEL:
+                    break
+                if self._cancelled:
+                    _stop_event.set()
+                    break
+                chunk, sr = item
+                if isinstance(chunk, torch.Tensor):
+                    chunk = chunk.cpu().numpy()
+                chunk = chunk.astype(np.float32)
+                dur = float(len(chunk) / sr) if sr else 0.0
+
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"[{datetime.now()}] [Qwen TTS stream] First chunk after {time.time()-start_time:.2f}s")
+
+                yield AudioChunk(
+                    sentence_index=sentence_index,
+                    audio_bytes=b"",
+                    audio_np=chunk,
+                    sample_rate=int(sr),
+                    start_time=t_cursor,
+                    duration=dur,
+                )
+                t_cursor += dur
+                generated_duration += dur
+                if generated_duration >= max_duration:
+                    print(f"[{datetime.now()}] [Qwen TTS stream] Safety cap: {generated_duration:.2f}s >= {max_duration:.1f}s after {chunk_count} chunks")
+                    _stop_event.set()
+                    break
+        finally:
+            _stop_event.set()
+            await fut
+            executor.shutdown(wait=False)
+
         total_elapsed = time.time() - start_time
-        print(f"[{datetime.now()}] [Qwen TTS stream] Completed {chunk_count} chunks in {total_elapsed:.2f}s")
+        print(f"[{datetime.now()}] [Qwen TTS stream] Completed {chunk_count} chunks in {total_elapsed:.2f}s ({generated_duration:.2f}s audio)")
 
     async def process_sentence(
         self,
@@ -256,7 +304,7 @@ class QwenTTSWorker:
         if self._cancelled:
             return None
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             self._generate_audio_sync,

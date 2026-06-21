@@ -90,6 +90,7 @@ class PipelineStagesMixin:
                             sentence_index=sentence_idx,
                             cumulative_time=self._cumulative_audio_time,
                             voice_clone_prompt=self._voice_clone_prompt,
+                            language=getattr(self, "_language", "English"),
                         ):
                             if self._cancelled:
                                 break
@@ -311,6 +312,7 @@ class PipelineStagesMixin:
                         chunk_index=audio_chunk_idx,
                         sentence_index=max(0, self._sentence_index - 1),
                         audio_base64="",
+                        audio_bytes_base64="",
                         start_time=self._cumulative_audio_time,
                         end_time=self._cumulative_audio_time,
                         sample_rate=self.tts.sr or 24000,

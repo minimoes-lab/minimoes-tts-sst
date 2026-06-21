@@ -59,11 +59,12 @@ async def websocket_infer_kyutai(
             await websocket.close()
             return
 
-        session_id  = init_msg.get("session_id")
-        question    = init_msg.get("question")
-        voice_id    = init_msg.get("voice_id") or "default"
+        session_id   = init_msg.get("session_id")
+        question     = init_msg.get("question")
+        voice_id     = init_msg.get("voice_id") or "default"
         return_audio = init_msg.get("return_audio", True)
-        chunk_ms    = init_msg.get("chunk_ms")
+        chunk_ms     = init_msg.get("chunk_ms")
+        language     = init_msg.get("language") or "English"
 
         if not session_id or not question:
             await websocket.send_json({"type": "status", "status": "error", "message": "session_id and question are required"})
@@ -93,7 +94,7 @@ async def websocket_infer_kyutai(
                 default_entry = state._voice_store.get("default")
                 voice_prompt = default_entry.get("prompt") if isinstance(default_entry, dict) else None
 
-        if voice_prompt is None and return_audio:
+        if voice_prompt is None:
             await websocket.send_json({"type": "status", "status": "error", "message": "No voice configured. Upload a reference audio via POST /tts/reference_audio first."})
             await websocket.close()
             return
@@ -127,6 +128,7 @@ async def websocket_infer_kyutai(
                 voice_clone_prompt=voice_prompt,
                 return_audio=return_audio,
                 chunk_ms=chunk_ms,
+                language=language,
             )
 
         monitor.print_summary()

@@ -52,8 +52,10 @@ class OptimizedBlendshapeWorker:
     def _optimize_model(self):
         """Apply model optimizations."""
         try:
-            # Quantization for faster inference
-            if self._use_quantization and torch.cuda.is_available():
+            # Quantization is incompatible with torch.compile'd models (the model is
+            # already compiled in api.py lifespan). Skip silently if compiled.
+            is_compiled = hasattr(self.model, "_orig_mod")
+            if self._use_quantization and torch.cuda.is_available() and not is_compiled:
                 print(f"[{datetime.now()}] [BS Worker] Applying dynamic quantization")
                 self.model = torch.quantization.quantize_dynamic(
                     self.model,
@@ -82,40 +84,62 @@ class OptimizedBlendshapeWorker:
         if self._cancelled:
             return None
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, self._process_sync, audio_chunk
         )
         return result
-    
+
     async def process_audio_batch(
         self, audio_chunks: List[AudioChunk]
     ) -> List[Optional[BlendshapeChunk]]:
         """Process multiple audio chunks in a batch for efficiency."""
         if self._cancelled or not audio_chunks:
             return []
-        
-        loop = asyncio.get_event_loop()
+
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, self._process_batch_sync, audio_chunks
         )
         return result
     
+    @staticmethod
+    def _ensure_audio_bytes(audio_chunk: AudioChunk) -> bytes:
+        """Return WAV bytes for the chunk. In the streaming path audio_bytes=b"";
+        rebuild from audio_np so the feature extractor always gets valid WAV data."""
+        if audio_chunk.audio_bytes:
+            return audio_chunk.audio_bytes
+        import io as _io
+        import scipy.io.wavfile as _wavfile
+        audio_np = audio_chunk.audio_np
+        if audio_np is None or len(audio_np) == 0:
+            return b""
+        audio_int16 = (np.clip(audio_np.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+        buf = _io.BytesIO()
+        _wavfile.write(buf, audio_chunk.sample_rate or 24000, audio_int16)
+        buf.seek(0)
+        return buf.read()
+
     def _process_sync(self, audio_chunk: AudioChunk) -> Optional[BlendshapeChunk]:
         """Synchronous processing of single audio chunk."""
         from utils.audio.extraction.extract_features import extract_audio_features
         from utils.audio.processing.audio_processing import process_audio_features
-        
+
         try:
+            audio_bytes = self._ensure_audio_bytes(audio_chunk)
+            if not audio_bytes:
+                return None
+
             # Check cache first
-            cache_key = self._get_cache_key(audio_chunk)
+            import hashlib
+            cache_key = hashlib.md5(audio_bytes).hexdigest()
             if self._cache_enabled and cache_key in self._frame_cache:
                 print(f"[{datetime.now()}] [BS Worker] Cache hit for sentence {audio_chunk.sentence_index}")
                 blendshapes = self._frame_cache[cache_key].copy()
             else:
                 # Extract features
                 audio_features, y = extract_audio_features(
-                    audio_chunk.audio_bytes, from_bytes=True
+                    audio_bytes, from_bytes=True
                 )
                 
                 if audio_features is None or y is None:
@@ -131,7 +155,7 @@ class OptimizedBlendshapeWorker:
                     apply_easing=self._is_first_chunk,
                 )
                 
-                # Cache result
+                # Cache result (cap at 100 entries to bound memory)
                 if self._cache_enabled and len(self._frame_cache) < 100:
                     self._frame_cache[cache_key] = blendshapes.copy()
             
@@ -188,8 +212,12 @@ class OptimizedBlendshapeWorker:
             # Extract features for all chunks
             features_list = []
             for chunk in audio_chunks:
+                audio_bytes = self._ensure_audio_bytes(chunk)
+                if not audio_bytes:
+                    results.append(None)
+                    continue
                 audio_features, y = extract_audio_features(
-                    chunk.audio_bytes, from_bytes=True
+                    audio_bytes, from_bytes=True
                 )
                 if audio_features is not None:
                     features_list.append((chunk, audio_features))
@@ -229,10 +257,6 @@ class OptimizedBlendshapeWorker:
         except Exception as e:
             print(f"[{datetime.now()}] [BS Worker Batch] ERROR: {repr(e)}")
             return [None] * len(audio_chunks)
-    
-    def _get_cache_key(self, audio_chunk: AudioChunk) -> str:
-        import hashlib
-        return hashlib.md5(audio_chunk.audio_bytes).hexdigest()
     
     def clear_cache(self):
         """Clear the frame cache."""

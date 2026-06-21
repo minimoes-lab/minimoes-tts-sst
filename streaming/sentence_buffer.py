@@ -5,9 +5,9 @@ from typing import List, Optional
 class SentenceBuffer:
     """Accumulates streaming LLM tokens and yields complete sentences."""
 
-    SPLIT_PATTERN = re.compile(r'(?<=[.!?;])\s+|(?<=\n)')
+    SPLIT_PATTERN = re.compile(r'(?<=[.!?;:])\s+|(?<=—)\s*|(?<=\n)')
 
-    def __init__(self, min_chars: int = 12, max_chars: int = 160):
+    def __init__(self, min_chars: int = 40, max_chars: int = 160):
         self._buffer = ""
         self._min_chars = min_chars
         self._max_chars = max_chars

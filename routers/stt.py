@@ -75,7 +75,7 @@ async def websocket_stt(
             return
 
         language = init_msg.get("language") or None
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         worker = _get_stt_worker()
 

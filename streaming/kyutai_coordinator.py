@@ -54,7 +54,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         self.config = config
 
         self._voice_clone_prompt = None
-        self.sentence_buffer = SentenceBuffer(min_chars=12, max_chars=160)
+        self.sentence_buffer = SentenceBuffer(min_chars=40, max_chars=160)
 
         self.audio_stream = DelayedStream(delay_frames=0)
         self.visual_stream = DelayedStream(delay_frames=2)
@@ -71,7 +71,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         self._max_buffer_size = 5
 
         self._sentence_queue: asyncio.Queue = asyncio.Queue(maxsize=self._max_buffer_size)
-        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=self._target_buffer_size)
+        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
 
         self._error_count = 0
         self._max_errors = 3
@@ -84,6 +84,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         voice_clone_prompt=None,
         return_audio: bool = True,
         chunk_ms: Optional[int] = None,
+        language: str = "English",
     ):
         self._cancelled = False
         self.tts.reset()
@@ -92,6 +93,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         if isinstance(chunk_ms, int) and chunk_ms > 0:
             self._chunk_ms = chunk_ms
         self._voice_clone_prompt = voice_clone_prompt
+        self._language = language
 
         await self._send_status("processing", "Starting Kyutai-optimized pipeline")
         print(f"[{datetime.now()}] [Kyutai] Pipeline start return_audio={return_audio} chunk_ms={self._chunk_ms}")
@@ -180,20 +182,17 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
                         self._min_buffer_size, min(target, self._max_buffer_size)
                     )
         except Exception:
-            pass
+            # WS disconnected or receive failed — treat as implicit interrupt so the
+            # pipeline stops instead of running to completion on GPU needlessly.
+            self._cancelled = True
+            self.tts.cancel()
+            self.bs.cancel()
 
     async def _monitor_buffer_health(self):
         while not self._cancelled:
             try:
                 await asyncio.sleep(0.5)
-                audio_fill    = self._audio_queue.qsize() / self._target_buffer_size
-                sentence_fill = self._sentence_queue.qsize() / self._target_buffer_size
-                self._buffer_health = (audio_fill + sentence_fill) / 2
-
-                if self._buffer_health < 0.3:
-                    self._target_buffer_size = min(self._target_buffer_size + 1, self._max_buffer_size)
-                elif self._buffer_health > 0.8:
-                    self._target_buffer_size = max(self._target_buffer_size - 1, self._min_buffer_size)
+                self._buffer_health = self._audio_queue.qsize() / self._audio_queue.maxsize
             except Exception:
                 pass
 
