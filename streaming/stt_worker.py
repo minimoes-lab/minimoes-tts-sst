@@ -9,8 +9,12 @@ from typing import Optional, Callable
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 512          # ~32ms per chunk at 16kHz
 PARTIAL_EVERY_N_CHUNKS = 8   # emit partial every ~256ms
-SILENCE_THRESHOLD = 0.01     # RMS below this = silence
+SILENCE_THRESHOLD = 0.02     # RMS below this = silence (raised to reduce noise triggers)
 SILENCE_CHUNKS = 20          # ~640ms silence = end of utterance
+NO_SPEECH_THRESHOLD = 0.6    # Whisper no_speech_prob above this → discard
+# Regex for Whisper hallucinations: only dots, ellipsis, whitespace, or dashes
+import re as _re
+_HALLUCINATION_RE = _re.compile(r'^[\s.…\-–—*()[\]]+$')
 # Max 5 minutes of PCM16 mono 16kHz = 5*60*16000*2 bytes = 9.6 MB
 _MAX_PCM_BUFFER_BYTES = 5 * 60 * SAMPLE_RATE * 2
 
@@ -33,8 +37,19 @@ class STTWorker:
             self.model = WhisperModel(self.model_name, device=self.device, compute_type=compute_type)
 
     def transcribe_audio(self, audio: np.ndarray, language: Optional[str] = None) -> str:
-        segments, _ = self.model.transcribe(audio, language=language or self.language, beam_size=1)
-        return "".join(s.text for s in segments).strip()
+        segments, info = self.model.transcribe(
+            audio,
+            language=language or self.language,
+            beam_size=1,
+            vad_filter=True,
+            vad_parameters={"threshold": 0.5},
+        )
+        if info.no_speech_prob > NO_SPEECH_THRESHOLD:
+            return ""
+        text = "".join(s.text for s in segments).strip()
+        if _HALLUCINATION_RE.fullmatch(text):
+            return ""
+        return text
 
 
 class StreamingSTTSession:
