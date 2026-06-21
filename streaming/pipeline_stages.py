@@ -46,7 +46,10 @@ class PipelineStagesMixin:
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai LLM] ERROR: {repr(e)}")
             import traceback; traceback.print_exc()
-            await self._handle_error("llm", e)
+            try:
+                await self._handle_error("llm", e)
+            except Exception:
+                pass
         finally:
             print(f"[{datetime.now()}] [Kyutai LLM] Stage end")
             await self._sentence_queue.put(None)
@@ -116,7 +119,10 @@ class PipelineStagesMixin:
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai TTS] ERROR: {repr(e)}")
             import traceback; traceback.print_exc()
-            await self._handle_error("tts", e)
+            try:
+                await self._handle_error("tts", e)
+            except Exception:
+                pass
         finally:
             print(f"[{datetime.now()}] [Kyutai TTS] Stage end")
             await self._audio_queue.put(None)
@@ -175,25 +181,34 @@ class PipelineStagesMixin:
                 bs_chunk = await self.bs.process_audio_chunk(bs_audio_chunk)
 
                 if bs_chunk is None or not hasattr(bs_chunk, 'frames') or len(bs_chunk.frames) == 0:
-                    await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+                    try:
+                        await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+                    except Exception:
+                        pass
                 else:
                     self._last_blendshape_frame = bs_chunk.frames[-1].copy()
                     self._last_successful_frame = bs_chunk.frames[-1].copy()
                     self.visual_stream.push(bs_chunk)
                     ready_chunk = self.visual_stream.pop()
                     if ready_chunk:
-                        await self.ws.send_json(make_blendshapes_msg(
-                            chunk_index=bs_chunk_idx,
-                            sentence_index=ready_chunk.sentence_index,
-                            frames=ready_chunk.frames.tolist(),
-                            start_time=ready_chunk.start_time,
-                            end_time=ready_chunk.end_time,
-                            frame_rate=ready_chunk.frame_rate,
-                            is_final=False,
-                        ))
+                        try:
+                            await self.ws.send_json(make_blendshapes_msg(
+                                chunk_index=bs_chunk_idx,
+                                sentence_index=ready_chunk.sentence_index,
+                                frames=ready_chunk.frames.tolist(),
+                                start_time=ready_chunk.start_time,
+                                end_time=ready_chunk.end_time,
+                                frame_rate=ready_chunk.frame_rate,
+                                is_final=False,
+                            ))
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[{datetime.now()}] [Kyutai BS] Inference error: {e}")
-                await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+                try:
+                    await self._send_fallback_frames(bs_chunk_idx, bs_audio_chunk)
+                except Exception:
+                    pass
 
             bs_chunk_idx += 1
             bs_buf_audio = []

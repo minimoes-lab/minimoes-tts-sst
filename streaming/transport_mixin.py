@@ -59,20 +59,23 @@ class TransportMixin:
             seg_start_time = audio_chunk.start_time + (sample_cursor / sr)
             seg_end_time   = audio_chunk.start_time + (end / sr)
 
-            await self.ws.send_json(
-                make_audio_chunk_msg(
-                    chunk_index=chunk_idx,
-                    sentence_index=audio_chunk.sentence_index,
-                    audio_base64="",
-                    audio_bytes_base64=seg_b64,
-                    start_time=seg_start_time,
-                    end_time=seg_end_time,
-                    sample_rate=sr,
-                    audio_format="pcm_s16le",
-                    channels=1,
-                    is_final=False,
+            try:
+                await self.ws.send_json(
+                    make_audio_chunk_msg(
+                        chunk_index=chunk_idx,
+                        sentence_index=audio_chunk.sentence_index,
+                        audio_base64="",
+                        audio_bytes_base64=seg_b64,
+                        start_time=seg_start_time,
+                        end_time=seg_end_time,
+                        sample_rate=sr,
+                        audio_format="pcm_s16le",
+                        channels=1,
+                        is_final=False,
+                    )
                 )
-            )
+            except Exception:
+                return chunk_idx
 
             if chunk_idx == 0 or chunk_idx % 20 == 0:
                 print(
