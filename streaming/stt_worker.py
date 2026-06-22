@@ -9,9 +9,9 @@ from typing import Optional, Callable
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 512          # ~32ms per chunk at 16kHz
 PARTIAL_EVERY_N_CHUNKS = 8   # emit partial every ~256ms
-SILENCE_THRESHOLD = 0.02     # RMS below this = silence (raised to reduce noise triggers)
+SILENCE_THRESHOLD = 0.01     # RMS below this = silence
 SILENCE_CHUNKS = 20          # ~640ms silence = end of utterance
-NO_SPEECH_THRESHOLD = 0.6    # Whisper no_speech_prob above this → discard
+NO_SPEECH_THRESHOLD = 0.85   # Whisper no_speech_prob above this → discard
 # Regex for Whisper hallucinations: only dots, ellipsis, whitespace, or dashes
 import re as _re
 _HALLUCINATION_RE = _re.compile(r'^[\s.…\-–—*()[\]]+$')
@@ -42,7 +42,7 @@ class STTWorker:
             language=language or self.language,
             beam_size=1,
             vad_filter=True,
-            vad_parameters={"threshold": 0.5},
+            vad_parameters={"threshold": 0.3},
         )
         if info.no_speech_prob > NO_SPEECH_THRESHOLD:
             return ""
