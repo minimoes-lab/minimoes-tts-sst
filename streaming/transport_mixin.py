@@ -49,44 +49,37 @@ class TransportMixin:
         audio_np = audio_np.astype(np.float32, copy=False)
         audio_int16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
 
-        samples_per = max(1, int(sr * (self._chunk_ms / 1000.0)))
-        total_samples = int(audio_int16.shape[0])
-        sample_cursor = 0
+        # Send each TTS chunk as-is — do NOT sub-divide it.
+        # The streaming fork applies Hann-window crossfade at chunk boundaries;
+        # splitting chunks breaks that crossfade and causes glitches/crackles.
+        seg_bytes = audio_int16.tobytes(order="C")
+        seg_b64 = base64.b64encode(seg_bytes).decode("utf-8")
 
-        while sample_cursor < total_samples and not self._cancelled:
-            end = min(total_samples, sample_cursor + samples_per)
-            seg_bytes = audio_int16[sample_cursor:end].tobytes(order="C")
-            seg_b64 = base64.b64encode(seg_bytes).decode("utf-8")
-
-            seg_start_time = audio_chunk.start_time + (sample_cursor / sr)
-            seg_end_time   = audio_chunk.start_time + (end / sr)
-
-            try:
-                await self.ws.send_json(
-                    make_audio_chunk_msg(
-                        chunk_index=chunk_idx,
-                        sentence_index=audio_chunk.sentence_index,
-                        audio_base64="",
-                        audio_bytes_base64=seg_b64,
-                        start_time=seg_start_time,
-                        end_time=seg_end_time,
-                        sample_rate=sr,
-                        audio_format="pcm_s16le",
-                        channels=1,
-                        is_final=False,
-                    )
+        try:
+            await self.ws.send_json(
+                make_audio_chunk_msg(
+                    chunk_index=chunk_idx,
+                    sentence_index=audio_chunk.sentence_index,
+                    audio_base64="",
+                    audio_bytes_base64=seg_b64,
+                    start_time=audio_chunk.start_time,
+                    end_time=audio_chunk.start_time + audio_chunk.duration,
+                    sample_rate=sr,
+                    audio_format="pcm_s16le",
+                    channels=1,
+                    is_final=False,
                 )
-            except Exception:
-                return chunk_idx
+            )
+        except Exception:
+            return chunk_idx
 
-            if chunk_idx == 0 or chunk_idx % 20 == 0:
-                print(
-                    f"[{datetime.now()}] [Kyutai Audio] sent_chunk={chunk_idx} "
-                    f"bytes={len(seg_bytes)} sr={sr} sentence_index={audio_chunk.sentence_index}"
-                )
+        if chunk_idx == 0 or chunk_idx % 20 == 0:
+            print(
+                f"[{datetime.now()}] [Kyutai Audio] sent_chunk={chunk_idx} "
+                f"bytes={len(seg_bytes)} sr={sr} sentence_index={audio_chunk.sentence_index}"
+            )
 
-            chunk_idx += 1
-            sample_cursor = end
+        chunk_idx += 1
 
         return chunk_idx
 
