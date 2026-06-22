@@ -57,7 +57,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         self.sentence_buffer = SentenceBuffer(min_chars=40, max_chars=160)
 
         self.audio_stream = DelayedStream(delay_frames=0)
-        self.visual_stream = DelayedStream(delay_frames=2)
+        self.visual_stream = DelayedStream(delay_frames=0)
 
         self._cancelled = False
         self._cumulative_audio_time = 0.0
