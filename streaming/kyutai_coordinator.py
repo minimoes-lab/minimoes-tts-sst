@@ -160,7 +160,11 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
     async def _listen_for_interrupts(self):
         try:
             while not self._cancelled:
-                msg = await self.ws.receive_json()
+                try:
+                    msg = await asyncio.wait_for(self.ws.receive_json(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # No message in 30s — connection may be idle but still alive; loop.
+                    continue
 
                 if msg.get("type") == "interrupt":
                     print(f"[{datetime.now()}] [Kyutai] Interrupt received")
@@ -174,16 +178,20 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
                     break
 
                 elif msg.get("type") == "ping":
-                    await self.ws.send_json({"type": "pong"})
+                    try:
+                        await self.ws.send_json({"type": "pong"})
+                    except Exception:
+                        pass
 
                 elif msg.get("type") == "buffer_adjust":
                     target = msg.get("target_size", self._target_buffer_size)
                     self._target_buffer_size = max(
                         self._min_buffer_size, min(target, self._max_buffer_size)
                     )
-        except Exception:
+        except Exception as e:
             # WS disconnected or receive failed — treat as implicit interrupt so the
             # pipeline stops instead of running to completion on GPU needlessly.
+            print(f"[{datetime.now()}] [Kyutai] Interrupt listener closed: {repr(e)}")
             self._cancelled = True
             self.tts.cancel()
             self.bs.cancel()
