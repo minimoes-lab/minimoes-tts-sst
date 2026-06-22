@@ -188,7 +188,12 @@ class QwenTTSWorker:
 
                     if warmup_prompt is not None:
                         def _warmup():
-                            for wtext in ["Hello.", "This is a warmup."]:
+                            for wtext in [
+                                "Hello.",
+                                "This is a warmup.",
+                                "Hey! How can I help you today? Do you have a question?",
+                                "I'd be happy to help you with that. Let me explain how this works in detail.",
+                            ]:
                                 for _chunk, _sr in self.model.stream_generate_voice_clone(
                                     text=wtext,
                                     language="English",
