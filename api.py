@@ -104,20 +104,30 @@ async def lifespan(app: FastAPI):
         print(f"[{datetime.now()}] Blendshape model missing or invalid (size={model_size}), downloading...")
         await loop.run_in_executor(None, _download_model)
 
-    # Blendshape runs on CPU to avoid GPU contention with TTS.
-    # The model is small enough that CPU inference is fast enough for 60fps.
-    bs_device = torch.device("cpu")
-    print(f"[{datetime.now()}] Loading blendshape model from {model_path} (CPU)...")
+    print(f"[{datetime.now()}] Loading blendshape model from {model_path}...")
     try:
-        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, bs_device)
+        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, device)
     except Exception as e:
         print(f"[{datetime.now()}] Blendshape model corrupted ({e}), deleting and re-downloading...")
         os.remove(model_path)
         await loop.run_in_executor(None, _download_model)
-        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, bs_device)
+        state.blendshape_model = await loop.run_in_executor(None, load_model, model_path, config, device)
 
-    # torch.compile on CPU with reduce-overhead is not beneficial — skip.
-    print(f"[{datetime.now()}] Blendshape model loaded on CPU (torch.compile skipped).")
+    # torch.compile() can take 30s+ — run once here at startup, never inside a request handler
+    enable_compile = os.getenv("ENABLE_TORCH_COMPILE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if enable_compile and torch.cuda.is_available() and hasattr(torch, "compile"):
+        print(f"[{datetime.now()}] Compiling blendshape model with torch.compile (one-time)...")
+        t0 = time.time()
+        try:
+            state.blendshape_model = await loop.run_in_executor(
+                None,
+                lambda: torch.compile(state.blendshape_model, mode="reduce-overhead"),
+            )
+            print(f"[{datetime.now()}] torch.compile done in {time.time() - t0:.1f}s")
+        except Exception as e:
+            print(f"[{datetime.now()}] torch.compile failed (non-fatal): {e}")
+    else:
+        print(f"[{datetime.now()}] Blendshape model loaded (torch.compile skipped).")
 
     print(f"[{datetime.now()}] Warming up TTS model...")
     t0 = time.time()

@@ -112,7 +112,8 @@ async def websocket_infer_kyutai(
             return
 
         async with (sem if sem is not None else asyncio.Semaphore(999)):
-            bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, "cpu", config)
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            bs_worker = OptimizedBlendshapeWorker(state.blendshape_model, device_str, config)
 
             coordinator = KyutaiStreamCoordinator(
                 websocket=websocket,
