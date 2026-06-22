@@ -122,17 +122,11 @@ class QwenTTSWorker:
                     # sizes.  Tell the inductor to skip recording new graphs for any
                     # unseen size at runtime — fall back to eager instead of adding
                     # latency on the first call with an unexpected shape.
-                    try:
-                        import torch._inductor.config as _ic
-                        _ic.triton.cudagraph_skip_dynamic_graphs = True
-                    except Exception:
-                        pass
-
                     if hasattr(self.model, "enable_streaming_optimizations"):
                         self.model.enable_streaming_optimizations(
                             decode_window_frames=80,
                             use_compile=True,
-                            use_cuda_graphs=True,
+                            use_cuda_graphs=False,
                             compile_mode="reduce-overhead",
                             use_fast_codebook=False,
                             compile_codebook_predictor=True,
