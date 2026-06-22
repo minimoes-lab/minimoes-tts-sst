@@ -84,17 +84,10 @@ class PipelineStagesMixin:
                 if sentence is None:
                     break
 
-                # Batch path: accumulate all chunks for the sentence before sending.
-                # RTF > 1.0 on this GPU means streaming chunks arrive slower than
-                # playback speed, creating audible gaps. Buffering the full sentence
-                # first and sending as one concatenated AudioChunk guarantees gapless
-                # playback at the cost of ~1-2s latency before first audio.
+                # Streaming path (preferred)
                 if hasattr(self.tts, "stream_sentence"):
                     try:
-                        import numpy as np
-                        from streaming.qwen_tts_worker import AudioChunk
-                        accumulated: list = []
-                        first_chunk = None
+                        chunk_n = 0
                         async for audio_chunk in self.tts.stream_sentence(
                             sentence=sentence,
                             sentence_index=sentence_idx,
@@ -104,29 +97,13 @@ class PipelineStagesMixin:
                         ):
                             if self._cancelled:
                                 break
-                            if first_chunk is None:
-                                first_chunk = audio_chunk
-                            accumulated.append(audio_chunk)
-
-                        if accumulated and not self._cancelled:
-                            # Concatenate all audio into one gapless chunk
-                            combined_np = np.concatenate([c.audio_np for c in accumulated], axis=0)
-                            total_duration = sum(c.duration for c in accumulated)
-                            combined = AudioChunk(
-                                sentence_index=sentence_idx,
-                                audio_bytes=b"",
-                                audio_np=combined_np,
-                                sample_rate=accumulated[0].sample_rate,
-                                start_time=accumulated[0].start_time,
-                                duration=total_duration,
-                            )
-                            self._cumulative_audio_time += total_duration
-                            await self._audio_queue.put(combined)
-
+                            chunk_n += 1
+                            self._cumulative_audio_time += audio_chunk.duration
+                            await self._audio_queue.put(audio_chunk)
                         sentence_idx += 1
                         continue
                     except Exception as e:
-                        print(f"[{datetime.now()}] [Kyutai TTS] Batch path failed: {e}")
+                        print(f"[{datetime.now()}] [Kyutai TTS] Streaming path failed: {e}")
                         import traceback; traceback.print_exc()
 
                 # Batch path with retries

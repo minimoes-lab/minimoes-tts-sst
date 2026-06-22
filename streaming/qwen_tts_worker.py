@@ -126,7 +126,7 @@ class QwenTTSWorker:
                         self.model.enable_streaming_optimizations(
                             decode_window_frames=80,
                             use_compile=True,
-                            use_cuda_graphs=False,
+                            use_cuda_graphs=True,
                             compile_mode="reduce-overhead",
                             use_fast_codebook=False,
                             compile_codebook_predictor=True,
@@ -201,7 +201,7 @@ class QwenTTSWorker:
                                     emit_every_frames=8,
                                     decode_window_frames=80,
                                     overlap_samples=512,
-                                    first_chunk_emit_every=5,
+                                    first_chunk_emit_every=0,
                                     first_chunk_decode_window=48,
                                     first_chunk_frames=48,
                                 ):
@@ -298,7 +298,7 @@ class QwenTTSWorker:
                     emit_every_frames=emit_every_frames,
                     decode_window_frames=decode_window_frames,
                     overlap_samples=overlap_samples,
-                    first_chunk_emit_every=first_chunk_emit_every,
+                    first_chunk_emit_every=0,
                     first_chunk_decode_window=first_chunk_decode_window,
                     first_chunk_frames=first_chunk_frames,
                     max_frames=10000,
