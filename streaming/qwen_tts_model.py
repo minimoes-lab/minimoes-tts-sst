@@ -124,6 +124,21 @@ class QwenTTSModelMixin:
                         trust_remote_code=True,
                     )
 
+                # Patch processor.__call__ to bypass _merge_kwargs which calls
+                # get_call_template — removed in newer transformers versions.
+                # Calls the tokenizer directly, matching what Qwen3TTSProcessor.__call__ does.
+                _tokenizer = self.model.processor.tokenizer
+                def _patched_processor_call(text=None, **kwargs):
+                    from transformers.feature_extraction_utils import BatchFeature
+                    if text is None:
+                        raise ValueError("text is required")
+                    if not isinstance(text, list):
+                        text = [text]
+                    result = _tokenizer(text, return_tensors=kwargs.get("return_tensors"), padding=kwargs.get("padding", False))
+                    return BatchFeature(data=dict(result), tensor_type=kwargs.get("return_tensors"))
+                self.model.processor.__call__ = _patched_processor_call
+                print(f"[{datetime.now()}] [Qwen TTS] Processor patched for transformers compatibility")
+
             # OPTIMIZATION 6x: Enable streaming optimizations (torch.compile + CUDA graphs)
             if (not reuse_shared) and self.device == "cuda":
                 print(f"[{datetime.now()}] [Qwen TTS] Enabling 6x streaming optimizations...")
