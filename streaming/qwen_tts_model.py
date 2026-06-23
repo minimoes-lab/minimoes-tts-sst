@@ -14,6 +14,25 @@ import torch
 # Use TensorFloat32 cores for float32 matrix multiplications — free ~15% speedup on Ampere+
 torch.set_float32_matmul_precision('high')
 
+# Patch librosa.resample to use scipy instead of numba (numba's @guvectorize is broken
+# with the installed numpy version). This prevents the 'get_call_template' crash when
+# qwen_tts internally calls librosa.resample for audio normalization.
+def _patched_librosa_resample(y=None, *, orig_sr=None, target_sr=None, **kwargs):
+    if orig_sr == target_sr:
+        return y
+    from scipy.signal import resample_poly
+    from math import gcd
+    g = gcd(int(target_sr), int(orig_sr))
+    return resample_poly(y, int(target_sr) // g, int(orig_sr) // g).astype(np.float32)
+
+try:
+    import librosa
+    librosa.resample = _patched_librosa_resample
+    if hasattr(librosa, 'core'):
+        librosa.core.resample = _patched_librosa_resample
+except ImportError:
+    pass
+
 
 @dataclass
 class AudioChunk:
@@ -163,9 +182,16 @@ class QwenTTSModelMixin:
             # Build voice clone prompt if provided
             if self.reference_audio_path and self.reference_text:
                 import soundfile as sf
+                from scipy.signal import resample_poly
+                from math import gcd
                 _ref_audio, _ref_sr = sf.read(self.reference_audio_path, dtype="float32", always_2d=False)
                 if _ref_audio.ndim > 1:
                     _ref_audio = _ref_audio.mean(axis=1)
+                _target_sr = 24000
+                if _ref_sr != _target_sr:
+                    _g = gcd(_target_sr, _ref_sr)
+                    _ref_audio = resample_poly(_ref_audio, _target_sr // _g, _ref_sr // _g).astype(np.float32)
+                    _ref_sr = _target_sr
                 self.voice_clone_prompt = self.model.create_voice_clone_prompt(
                     ref_audio=(_ref_audio, _ref_sr),
                     ref_text=self.reference_text,
@@ -255,9 +281,16 @@ class QwenTTSModelMixin:
         if self.model is None or not self.model_loaded:
             raise RuntimeError("Model not loaded")
         import soundfile as sf
+        from scipy.signal import resample_poly
+        from math import gcd
         audio_np, sr = sf.read(ref_audio_path, dtype="float32", always_2d=False)
         if audio_np.ndim > 1:
             audio_np = audio_np.mean(axis=1)
+        target_sr = 24000
+        if sr != target_sr:
+            g = gcd(target_sr, sr)
+            audio_np = resample_poly(audio_np, target_sr // g, sr // g).astype(np.float32)
+            sr = target_sr
         return self.model.create_voice_clone_prompt(ref_audio=(audio_np, sr), ref_text=ref_text)
 
     def cancel(self):
