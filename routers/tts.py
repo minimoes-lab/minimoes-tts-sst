@@ -123,7 +123,9 @@ async def set_tts_reference_audio(
     try:
         prompt = model_worker.create_voice_clone_prompt(ref_path, text.strip())
     except Exception as e:
-        raise HTTPException(status_code=400, detail="Failed to build voice clone prompt")
+        import traceback
+        print(f"[TTS] create_voice_clone_prompt failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=400, detail=f"Failed to build voice clone prompt: {e}")
 
     async with state._voice_store_lock:
         # Remove old WAV file for this voice_id before replacing it
