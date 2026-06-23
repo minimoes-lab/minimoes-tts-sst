@@ -4,9 +4,88 @@
 
 # extract_features.py
 import io
-import librosa
 import numpy as np
 import scipy.signal
+import soundfile as sf
+from math import gcd
+
+
+def _resample(y, orig_sr, target_sr):
+    if orig_sr == target_sr:
+        return y
+    g = gcd(int(target_sr), int(orig_sr))
+    return scipy.signal.resample_poly(y, int(target_sr) // g, int(orig_sr) // g).astype(np.float32)
+
+
+def _mfcc(y, sr, n_mfcc=23, n_fft=1024, hop_length=512):
+    """Compute MFCCs using scipy/numpy (no librosa/numba dependency)."""
+    n_mels = 128
+    fmin = 0.0
+    fmax = sr / 2.0
+
+    # STFT
+    stft = np.abs(np.fft.rfft(
+        np.lib.stride_tricks.sliding_window_view(
+            np.pad(y, (n_fft // 2, n_fft // 2), mode='reflect'),
+            n_fft
+        )[::hop_length] * np.hanning(n_fft),
+        axis=-1
+    )) ** 2
+
+    # Mel filterbank
+    n_freqs = n_fft // 2 + 1
+    mel_low = 2595.0 * np.log10(1.0 + fmin / 700.0)
+    mel_high = 2595.0 * np.log10(1.0 + fmax / 700.0)
+    mel_points = np.linspace(mel_low, mel_high, n_mels + 2)
+    hz_points = 700.0 * (10.0 ** (mel_points / 2595.0) - 1.0)
+    bins = np.floor((n_fft + 1) * hz_points / sr).astype(int)
+
+    fbank = np.zeros((n_mels, n_freqs))
+    for m in range(1, n_mels + 1):
+        f_left = bins[m - 1]
+        f_center = bins[m]
+        f_right = bins[m + 1]
+        for k in range(f_left, f_center):
+            if f_center != f_left:
+                fbank[m - 1, k] = (k - f_left) / (f_center - f_left)
+        for k in range(f_center, f_right):
+            if f_right != f_center:
+                fbank[m - 1, k] = (f_right - k) / (f_right - f_center)
+
+    # Apply mel filterbank and log
+    mel_spec = np.dot(stft, fbank.T)
+    mel_spec = np.maximum(mel_spec, 1e-10)
+    log_mel = np.log(mel_spec)
+
+    # DCT-II to get MFCCs
+    from scipy.fft import dct
+    mfcc = dct(log_mel, type=2, axis=1, norm='ortho')[:, :n_mfcc]
+    return mfcc.T  # shape: (n_mfcc, n_frames)
+
+
+def _delta(data, width=9, order=1):
+    """Compute delta features (replaces librosa.feature.delta)."""
+    result = data
+    for _ in range(order):
+        half = width // 2
+        padded = np.pad(result, ((0, 0), (half, half)), mode='edge')
+        denom = 2 * sum(n ** 2 for n in range(1, half + 1))
+        d = np.zeros_like(result)
+        for n in range(1, half + 1):
+            d += n * (padded[:, half + n:half + n + result.shape[1]] - padded[:, half - n:half - n + result.shape[1]])
+        result = d / denom
+    return result
+
+
+def _frame(y, frame_length, hop_length):
+    """Frame a signal (replaces librosa.util.frame)."""
+    n_frames = 1 + (len(y) - frame_length) // hop_length
+    frames = np.lib.stride_tricks.as_strided(
+        y,
+        shape=(frame_length, n_frames),
+        strides=(y.strides[0], y.strides[0] * hop_length)
+    )
+    return frames
 
 
 def extract_audio_features(audio_input, sr=88200, from_bytes=False):
@@ -17,8 +96,8 @@ def extract_audio_features(audio_input, sr=88200, from_bytes=False):
             y, sr = load_and_preprocess_audio(audio_input, sr)
     except Exception as e:
             print(f"Loading as WAV failed: {e}\nFalling back to PCM loading.")
-            y = load_pcm_audio_from_bytes(audio_input)  
-    
+            y = load_pcm_audio_from_bytes(audio_input)
+
     frame_length = int(0.01667 * sr)  # Frame length set to 0.01667 seconds (~60 fps)
     hop_length = frame_length // 2  # 2x overlap for smoother transitions
     min_frames = 9  # Minimum number of frames needed for delta calculation
@@ -30,11 +109,11 @@ def extract_audio_features(audio_input, sr=88200, from_bytes=False):
         return None, None
 
     combined_features = extract_and_combine_features(y, sr, frame_length, hop_length)
-    
+
     return combined_features, y
 
 def extract_and_combine_features(y, sr, frame_length, hop_length, include_autocorr=True):
-   
+
     all_features = []
     mfcc_features = extract_mfcc_features(y, sr, frame_length, hop_length)
     all_features.append(mfcc_features)
@@ -44,7 +123,7 @@ def extract_and_combine_features(y, sr, frame_length, hop_length, include_autoco
             y, sr, frame_length, hop_length
         )
         all_features.append(autocorr_features)
-    
+
     combined_features = np.hstack(all_features)
 
     return combined_features
@@ -62,14 +141,14 @@ def cepstral_mean_variance_normalization(mfcc):
 
 
 def extract_overlapping_mfcc(chunk, sr, num_mfcc, frame_length, hop_length, include_deltas=True, include_cepstral=True, threshold=1e-5):
-    mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=num_mfcc, n_fft=frame_length, hop_length=hop_length)
+    mfcc = _mfcc(y=chunk, sr=sr, n_mfcc=num_mfcc, n_fft=frame_length, hop_length=hop_length)
     if include_cepstral:
         mfcc = cepstral_mean_variance_normalization(mfcc)
 
     if include_deltas:
-        delta_mfcc = librosa.feature.delta(mfcc)
-        delta2_mfcc = librosa.feature.delta(mfcc, order=2)
-        combined_mfcc = np.vstack([mfcc, delta_mfcc, delta2_mfcc])  # Stack original MFCCs with deltas
+        delta_mfcc = _delta(mfcc, order=1)
+        delta2_mfcc = _delta(mfcc, order=2)
+        combined_mfcc = np.vstack([mfcc, delta_mfcc, delta2_mfcc])
         return combined_mfcc
     else:
         return mfcc
@@ -79,13 +158,13 @@ def reduce_features(features):
     num_frames = features.shape[1]
     paired_frames = features[:, :num_frames // 2 * 2].reshape(features.shape[0], -1, 2)
     reduced_frames = paired_frames.mean(axis=2)
-    
+
     if num_frames % 2 == 1:
         last_frame = features[:, -1].reshape(-1, 1)
         reduced_final_features = np.hstack((reduced_frames, last_frame))
     else:
         reduced_final_features = reduced_frames
-    
+
     return reduced_final_features
 
 
@@ -97,7 +176,7 @@ def extract_overlapping_autocorr(y, sr, frame_length, hop_length, num_autocorr_c
     else:
         y_padded = y
 
-    frames = librosa.util.frame(y_padded, frame_length=frame_length, hop_length=hop_length)
+    frames = _frame(y_padded, frame_length=frame_length, hop_length=hop_length)
     if pad_signal and trim_padded:
         num_frames = frames.shape[1]
         start_indices = np.arange(num_frames) * hop_length
@@ -125,7 +204,7 @@ def extract_overlapping_autocorr(y, sr, frame_length, hop_length, num_autocorr_c
     autocorr_features = autocorr_features[1:, :]
 
     autocorr_features = fix_edge_frames_autocorr(autocorr_features)
-                                     
+
     return autocorr_features
 
 
@@ -149,7 +228,7 @@ def extract_autocorrelation_features(
     autocorr_features = extract_overlapping_autocorr(
         y, sr, frame_length, hop_length
     )
-    
+
     if include_deltas:
         autocorr_features = compute_autocorr_with_deltas(autocorr_features)
 
@@ -159,17 +238,19 @@ def extract_autocorrelation_features(
 
 
 def compute_autocorr_with_deltas(autocorr_base):
-    delta_ac = librosa.feature.delta(autocorr_base)
-    delta2_ac = librosa.feature.delta(autocorr_base, order=2)
+    delta_ac = _delta(autocorr_base, order=1)
+    delta2_ac = _delta(autocorr_base, order=2)
     combined_autocorr = np.vstack([autocorr_base, delta_ac, delta2_ac])
     return combined_autocorr
 
 def load_and_preprocess_audio(audio_path, sr=88200):
-    y, sr = load_audio(audio_path, sr)
-    if sr != 88200:
-        y = librosa.resample(y, orig_sr=sr, target_sr=88200)
+    y, orig_sr = load_audio(audio_path, sr)
+    if orig_sr != 88200:
+        y = _resample(y, orig_sr, 88200)
         sr = 88200
-    
+    else:
+        sr = orig_sr
+
     max_val = np.max(np.abs(y))
     if max_val > 0:
         y = y / max_val
@@ -177,22 +258,27 @@ def load_and_preprocess_audio(audio_path, sr=88200):
     return y, sr
 
 def load_audio(audio_path, sr=88200):
-    y, sr = librosa.load(audio_path, sr=sr)
+    y, file_sr = sf.read(audio_path, dtype='float32', always_2d=False)
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    if file_sr != sr:
+        y = _resample(y, file_sr, sr)
     print(f"Loaded audio file '{audio_path}' with sample rate {sr}")
     return y, sr
 
 def load_audio_from_bytes(audio_bytes, sr=88200):
     audio_file = io.BytesIO(audio_bytes)
-    y, sr = librosa.load(audio_file, sr=sr)
-    
+    y, file_sr = sf.read(audio_file, dtype='float32', always_2d=False)
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    if file_sr != sr:
+        y = _resample(y, file_sr, sr)
+
     max_val = np.max(np.abs(y))
     if max_val > 0:
         y = y / max_val
 
     return y, sr
-
-
-
 
 
 def load_pcm_audio_from_bytes(audio_bytes, sr=22050, channels=1, sample_width=2):
@@ -206,17 +292,17 @@ def load_pcm_audio_from_bytes(audio_bytes, sr=22050, channels=1, sample_width=2)
         max_val = 32768.0
     else:
         raise ValueError("Unsupported sample width")
-    
+
     # Convert bytes to numpy array.
     data = np.frombuffer(audio_bytes, dtype=dtype)
-    
+
     # If stereo or more channels, reshape accordingly.
     if channels > 1:
         data = data.reshape(-1, channels)
-    
+
     # Normalize the data to range [-1, 1]
     y = data.astype(np.float32) / max_val
-    
+
     # Upsample the audio from the current sample rate to 88200 Hz.
     target_sr = 88200
     if sr != target_sr:

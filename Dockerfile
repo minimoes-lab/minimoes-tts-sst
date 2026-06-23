@@ -4,12 +4,16 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
     PIP_DISABLE_PIP_VERSION_CHECK=on \
     PIP_DEFAULT_TIMEOUT=100 \
-    NUMBA_DISABLE_JIT=1 \
     NUMBA_CACHE_DIR=/tmp/numba_cache \
     TOKENIZERS_PARALLELISM=false \
     PYTHONDONTWRITEBYTECODE=1 \
     MODELSCOPE_CACHE=/tmp/modelscope_cache \
-    HF_HOME=/tmp/hf_cache
+    HF_HOME=/tmp/hf_cache \
+    HOME=/tmp \
+    TORCH_HOME=/tmp/torch_cache \
+    TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache \
+    XDG_CACHE_HOME=/tmp/xdg_cache \
+    TRITON_CACHE_DIR=/tmp/triton_cache
 
 WORKDIR /app
 
