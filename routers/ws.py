@@ -4,18 +4,29 @@ from datetime import datetime
 from typing import Annotated, Optional
 
 import torch
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
-from starlette.status import WS_1008_POLICY_VIOLATION
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from starlette.status import HTTP_403_FORBIDDEN, WS_1008_POLICY_VIOLATION
 
 import core.state as state
 from streaming.kyutai_coordinator import KyutaiStreamCoordinator
 from streaming.optimized_blendshape_worker import OptimizedBlendshapeWorker
-from streaming.performance_monitor import get_monitor
+from streaming.performance_monitor import PerformanceMonitor
 from utils.config import config
 
 router = APIRouter()
 
 _API_KEY = os.getenv("RUNPOD_API_KEY", "")
+
+
+async def _require_api_key(
+    token: Annotated[Optional[str], Query()] = None,
+) -> str:
+    """Reject HTTP requests with 403 if the API key is wrong."""
+    if not _API_KEY:
+        return ""  # auth disabled when no key is configured (dev mode)
+    if token != _API_KEY:
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid or missing API key")
+    return token
 
 
 async def _require_ws_token(
@@ -44,8 +55,7 @@ async def websocket_infer_kyutai(
       4. Send: {"type": "interrupt"} to stop
     """
     await websocket.accept()
-    monitor = get_monitor()
-    monitor.reset()
+    monitor = PerformanceMonitor()
 
     try:
         try:
@@ -66,10 +76,27 @@ async def websocket_infer_kyutai(
         chunk_ms     = init_msg.get("chunk_ms")
         language     = init_msg.get("language") or "English"
 
-        if not session_id or not question:
-            await websocket.send_json({"type": "status", "status": "error", "message": "session_id and question are required"})
+        # Input validation
+        if not session_id or not isinstance(session_id, str) or len(session_id) > 64:
+            await websocket.send_json({"type": "status", "status": "error", "message": "Invalid session_id"})
             await websocket.close()
             return
+        if not question or not isinstance(question, str):
+            await websocket.send_json({"type": "status", "status": "error", "message": "question is required"})
+            await websocket.close()
+            return
+        if len(question) > 4000:
+            await websocket.send_json({"type": "status", "status": "error", "message": "question too long (max 4000 chars)"})
+            await websocket.close()
+            return
+        if not isinstance(voice_id, str) or len(voice_id) > 64:
+            voice_id = "default"
+        _ALLOWED_LANGUAGES = {"English", "French", "Spanish", "German", "Italian", "Portuguese", "Chinese", "Japanese", "Korean", "Arabic"}
+        if language not in _ALLOWED_LANGUAGES:
+            language = "English"
+        if chunk_ms is not None:
+            if not isinstance(chunk_ms, int) or chunk_ms < 20 or chunk_ms > 5000:
+                chunk_ms = None
 
         chain = state.get_conversation(session_id)
         if not chain:
@@ -148,7 +175,3 @@ async def websocket_infer_kyutai(
             pass
 
 
-@router.get("/performance/summary")
-async def get_performance_summary():
-    monitor = get_monitor()
-    return monitor.get_summary()

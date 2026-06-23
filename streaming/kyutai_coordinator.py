@@ -104,18 +104,10 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
         interrupt_task  = asyncio.create_task(self._listen_for_interrupts())
         monitor_task    = asyncio.create_task(self._monitor_buffer_health())
 
-        tasks = [llm_task, tts_task, blendshape_task, interrupt_task, monitor_task]
+        pipeline_tasks = [llm_task, tts_task, blendshape_task]
 
         try:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-            for task in done:
-                if task in (interrupt_task, monitor_task):
-                    continue
-                exc = task.exception()
-                if exc:
-                    raise exc
-        except asyncio.CancelledError:
-            pass
+            await asyncio.gather(*pipeline_tasks)
         except Exception as e:
             print(f"[{datetime.now()}] [Kyutai] Pipeline error: {repr(e)}")
             try:
@@ -123,8 +115,8 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
             except Exception:
                 pass
         finally:
-            # Cancel all tasks
-            for task in tasks:
+            # Cancel interrupt/monitor background tasks and any unfinished pipeline tasks
+            for task in [interrupt_task, monitor_task, *pipeline_tasks]:
                 if not task.done():
                     task.cancel()
             # Drain queues so blocked put() calls in finally blocks can unblock
@@ -135,7 +127,7 @@ class KyutaiStreamCoordinator(TransportMixin, PipelineStagesMixin):
                     except asyncio.QueueEmpty:
                         break
             # Now await cancellation so finally blocks in each stage run to completion
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(interrupt_task, monitor_task, *pipeline_tasks, return_exceptions=True)
             try:
                 if self._cancelled:
                     try:

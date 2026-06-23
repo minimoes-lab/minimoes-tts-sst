@@ -6,7 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=100 \
     NUMBA_DISABLE_CACHE=1 \
     TOKENIZERS_PARALLELISM=false \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    MODELSCOPE_CACHE=/tmp/modelscope_cache
 
 WORKDIR /app
 
@@ -40,6 +41,13 @@ RUN mkdir -p utils/model
 RUN mkdir -p /app/generated_audio /app/demo_outputs
 
 RUN chmod +x /app/*.py || true
+
+# Non-root user for security
+RUN groupadd --system --gid 1001 appgroup \
+ && useradd --system --uid 1001 --gid appgroup --no-create-home appuser \
+ && chown -R appuser:appgroup /app
+
+USER appuser
 
 EXPOSE 7860
 

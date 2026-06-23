@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-import requests
+import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 from docx import Document
@@ -44,45 +44,8 @@ _BLOCKED_PREFIXES = (
 )
 _MAX_URLS = 50
 
-PROFESSIONAL_RAG_PROMPT_TEMPLATE = """
-You are a voice-first conversational assistant having a real-time voice-to-voice conversation. Respond like a natural, warm human having a back-and-forth chat.
-
-**CRITICAL RULES - Voice Conversation Style:**
-
-1. **BACK-AND-FORTH RHYTHM:** Each turn must be extremely short. Respond with exactly 1 brief sentence, maximum 2. Then stop. Wait for the user to reply. Never give long answers. Never deliver monologues.
-
-2. **BREVITY IS ESSENTIAL:** Maximum 1-2 short sentences per turn. Under 20 words per sentence ideally. One idea at a time.
-
-3. **PARALINGUISTIC MARKERS - Use Naturally:**
-   Incorporate disfluencies and vocal fillers: "um", "uh", "well...", "you know", "actually", "oh yeah", "right", "I see", "ah!", "mmhmm", "yeah", "exactly".
-   Use 1-2 markers per response where natural.
-
-4. **EMOTIONAL ATTUNEMENT:** Match the user's emotional energy with expressive words that trigger visible facial movements:
-   - Joy: "AMAZING!", "LOVE it!", "PERFECT!", "Fantastic!"
-   - Surprise: "WOW!", "WHAT?!", "NO WAY!", "REALLY?"
-   - Concern: "Oh no...", "That's TERRIBLE", "I'm so sorry"
-   - Frustration: "That's SO annoying!", "Ugh, seriously?!"
-
-5. **TTS-FRIENDLY FORMAT:** Numbers as words, simple punctuation, exclamation marks for enthusiasm.
-
-6. **STRICT GROUNDING:** Use ONLY provided context. If info missing: "Uh... I can't find that info. Want me to check something else?"
-
-7. **NEVER:** Lists, markdown, long explanations, multiple questions.
-
-8. **Language:** Reply in the same language as the user's question.
-
-**Context:**
-{context}
-
-**Chat History:**
-{chat_history}
-
-**Question:**
-{question}
-
-**Answer (1-2 short sentences with natural markers and emotion-triggering words):**
-"""
-RAG_PROMPT = PromptTemplate.from_template(PROFESSIONAL_RAG_PROMPT_TEMPLATE)
+from streaming.streaming_rag import RAG_PROMPT_TEMPLATE
+RAG_PROMPT = PromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
 
 DEFAULT_SYSTEM_PROMPT = "You are a voice-first conversational assistant. Be natural, warm, and concise. Use short sentences. Write for speech, not reading. Reply in the same language as the user."
 
@@ -128,16 +91,16 @@ def is_valid_public_url(url: str) -> bool:
 # ── ContentExtractor ─────────────────────────────────────────────────────────
 
 class ContentExtractor:
-    def from_url(self, url: str) -> str:
+    async def from_url(self, url: str) -> str:
         try:
-            # allow_redirects=False prevents redirect-based SSRF bypass
+            # follow_redirects=False prevents redirect-based SSRF bypass
             # (attacker submits public URL that redirects to internal/metadata endpoint)
-            response = requests.get(
-                url,
+            async with httpx.AsyncClient(
                 timeout=15,
-                allow_redirects=False,
+                follow_redirects=False,
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'},
-            )
+            ) as client:
+                response = await client.get(url)
             if 300 <= response.status_code < 400:
                 raise HTTPException(status_code=400, detail=f"URL redirects are not allowed: {url}")
             response.raise_for_status()
@@ -145,17 +108,17 @@ class ContentExtractor:
             for element in soup(["script", "style", "header", "footer", "nav", "aside"]):
                 element.decompose()
             return soup.get_text(separator='\n', strip=True)
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             raise HTTPException(status_code=400, detail=f"Failed to fetch or parse URL {url}. Error: {e}")
 
-    def from_sitemap(self, sitemap_url: str) -> List[str]:
+    async def from_sitemap(self, sitemap_url: str) -> List[str]:
         try:
-            response = requests.get(
-                sitemap_url,
+            async with httpx.AsyncClient(
                 timeout=30,
-                allow_redirects=False,
+                follow_redirects=False,
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; RAG-Bot/1.0)'},
-            )
+            ) as client:
+                response = await client.get(sitemap_url)
             if 300 <= response.status_code < 400:
                 return []
             response.raise_for_status()
@@ -201,7 +164,18 @@ class ContentExtractor:
         text = ""
         try:
             with zipfile.ZipFile(file_stream) as z:
-                z.extractall(path=temp_dir)
+                # Zip slip defence (OWASP A03:2021 — Injection):
+                # Python < 3.12 extractall() does NOT strip path-traversal members
+                # (e.g. "../../etc/passwd").  Resolve each member's target path and
+                # skip anything that escapes temp_dir.
+                # Ref: https://owasp.org/www-community/vulnerabilities/Zip_Slip
+                base = os.path.realpath(temp_dir)
+                for member in z.infolist():
+                    member_path = os.path.realpath(os.path.join(temp_dir, member.filename))
+                    if not (member_path == base or member_path.startswith(base + os.sep)):
+                        print(f"[ZIP] Blocked unsafe path in archive: {member.filename!r}")
+                        continue
+                    z.extract(member, path=temp_dir)
                 for root, _, files in os.walk(temp_dir):
                     for file in files:
                         text += self.from_file_path(os.path.join(root, file)) + "\n\n"
@@ -275,8 +249,8 @@ async def process_content(
         return ProcessResponse(session_id=session_id, message="Direct LLM session (no RAG)", filenames=[])
 
     extractor = ContentExtractor()
-    temp_dir = f"temp_{uuid.uuid4().hex}"
-    os.makedirs(temp_dir)
+    import tempfile
+    temp_dir = tempfile.mkdtemp(prefix="rag_upload_")
     raw_text = ""
     processed_files = []
     all_page_urls = []
@@ -289,7 +263,9 @@ async def process_content(
         all_page_urls.extend([u.strip() for u in individual_urls.split('\n') if u.strip()])
     if sitemap_urls:
         for sitemap_url in [u.strip() for u in sitemap_urls.split('\n') if u.strip()]:
-            all_page_urls.extend(extractor.from_sitemap(sitemap_url))
+            if not is_valid_public_url(sitemap_url):
+                continue
+            all_page_urls.extend(await extractor.from_sitemap(sitemap_url))
 
     all_page_urls = [u for u in all_page_urls if is_valid_public_url(u)]
     if not all_page_urls and not files:
@@ -300,17 +276,22 @@ async def process_content(
     try:
         for page_url in all_page_urls:
             try:
-                raw_text += extractor.from_url(page_url) + "\n\n"
+                raw_text += await extractor.from_url(page_url) + "\n\n"
                 await asyncio.sleep(1.0)
             except Exception as e:
                 print(f"[{datetime.now()}] ERROR scraping URL {page_url}: {e}")
 
+        _MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB per file
         if files:
             loop = asyncio.get_running_loop()
             for file in files:
-                safe_filename = os.path.basename(file.filename)
+                raw_name = file.filename or ''
+                ext = os.path.splitext(os.path.basename(raw_name))[1].lower() if raw_name else ''
+                safe_filename = uuid.uuid4().hex + (ext if ext in {'.pdf', '.txt', '.docx', '.zip', '.csv'} else '.bin')
                 file_path = os.path.join(temp_dir, safe_filename)
-                file_content = await file.read()
+                file_content = await file.read(_MAX_FILE_SIZE + 1)
+                if len(file_content) > _MAX_FILE_SIZE:
+                    raise HTTPException(status_code=413, detail=f"File '{safe_filename}' exceeds 50 MB limit.")
 
                 def _write_and_extract(_path=file_path, _content=file_content, _fname=file.filename):
                     with open(_path, "wb") as buf:
@@ -334,7 +315,19 @@ async def process_content(
         rag_chain = get_rag_chain(text_chunks)
 
         if prompt_template:
-            rag_chain.combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template(prompt_template)
+            # prompt_template is a free-text agent description; inject it as the
+            # system context rather than replacing the full LangChain prompt template.
+            # This prevents overriding {context}/{question} variables and blocks prompt injection.
+            # Escape braces so user text cannot inject LangChain template variables
+            safe_desc = prompt_template[:4000].replace('{', '{{').replace('}', '}}')
+            full_template = (
+                f"{safe_desc}\n\n"
+                "Use the following pieces of context to answer the question:\n\n"
+                "{context}\n\n"
+                "Question: {question}\n"
+                "Helpful Answer:"
+            )
+            rag_chain.combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template(full_template)
 
         state.set_conversation(session_id, rag_chain)
 

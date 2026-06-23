@@ -193,6 +193,45 @@ AI: "Oh, sorry! Right... so what happened when you tried it?"
 """
 
 
+async def _astream_with_timeout(aiter, timeout: float):
+    """
+    Iterate an async generator with a total wall-clock timeout (Python 3.10 compatible).
+    Raises asyncio.TimeoutError if the entire stream takes longer than `timeout` seconds.
+    Uses a background task + asyncio.Queue so we can apply wait_for per next() call
+    with a cumulative deadline.
+    """
+    _sentinel = object()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+    async def _producer():
+        try:
+            async for chunk in aiter:
+                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if token:
+                    await queue.put(token)
+        finally:
+            await queue.put(_sentinel)
+
+    producer_task = asyncio.ensure_future(_producer())
+    deadline = asyncio.get_event_loop().time() + timeout
+    try:
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            item = await asyncio.wait_for(queue.get(), timeout=remaining)
+            if item is _sentinel:
+                break
+            yield item
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 async def streaming_rag_query(
     chain, question: str
 ) -> AsyncIterator[str]:
@@ -213,11 +252,13 @@ async def streaming_rag_query(
         messages.append(HumanMessage(content=question))
 
         full_answer = ""
-        async for chunk in llm.astream(messages):
-            token = chunk.content if hasattr(chunk, "content") else str(chunk)
-            if token:
+        try:
+            async for token in _astream_with_timeout(llm.astream(messages), timeout=45.0):
                 full_answer += token
                 yield token
+        except asyncio.TimeoutError:
+            print("[streaming_rag] Direct LLM stream timeout after 45s")
+            return
 
         chain["history"].append({"human": question, "ai": full_answer})
         # Prune in place to keep only the last _MAX_HISTORY_TURNS turns
@@ -254,11 +295,13 @@ async def streaming_rag_query(
     llm = _get_groq_rag()
 
     full_answer = ""
-    async for chunk in llm.astream(prompt):
-        token = chunk.content if hasattr(chunk, "content") else str(chunk)
-        if token:
+    try:
+        async for token in _astream_with_timeout(llm.astream(prompt), timeout=45.0):
             full_answer += token
             yield token
+    except asyncio.TimeoutError:
+        print("[streaming_rag] RAG LLM stream timeout after 45s")
+        return
 
     # --- Step 4: save to conversation memory ---
     chain.memory.save_context(

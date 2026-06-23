@@ -6,6 +6,7 @@ The three pipeline stages for KyutaiStreamCoordinator:
 """
 import asyncio
 import io
+import time
 from datetime import datetime
 from typing import Optional, List
 
@@ -14,6 +15,9 @@ import scipy.io.wavfile as wavfile
 
 from streaming.protocol import make_text_chunk_msg, make_audio_chunk_msg, make_blendshapes_msg
 from streaming.streaming_rag import streaming_rag_query
+
+# Safety timeout for the blendshape stage (seconds).
+_BS_STAGE_TIMEOUT_S = 90
 
 
 class PipelineStagesMixin:
@@ -54,19 +58,11 @@ class PipelineStagesMixin:
             except Exception:
                 pass
         finally:
-            print(f"[{datetime.now()}] [Kyutai LLM] Stage end")
+            print(f'[{datetime.now()}] [Kyutai LLM] Stage end')
             try:
-                self._sentence_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                # Queue is full; drain one item to make room, then push sentinel
-                try:
-                    self._sentence_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    self._sentence_queue.put_nowait(None)
-                except asyncio.QueueFull:
-                    pass
+                await asyncio.wait_for(self._sentence_queue.put(None), timeout=1.0)
+            except (asyncio.QueueFull, asyncio.TimeoutError):
+                pass  # run_streaming_pipeline drains queue before gather
 
     # ── Stage 2: TTS ─────────────────────────────────────────────────────────
 
@@ -139,18 +135,11 @@ class PipelineStagesMixin:
             except Exception:
                 pass
         finally:
-            print(f"[{datetime.now()}] [Kyutai TTS] Stage end")
+            print(f'[{datetime.now()}] [Kyutai TTS] Stage end')
             try:
-                self._audio_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                try:
-                    self._audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    self._audio_queue.put_nowait(None)
-                except asyncio.QueueFull:
-                    pass
+                await asyncio.wait_for(self._audio_queue.put(None), timeout=1.0)
+            except (asyncio.QueueFull, asyncio.TimeoutError):
+                pass
 
     # ── Stage 3: Blendshapes ──────────────────────────────────────────────────
 
@@ -162,7 +151,10 @@ class PipelineStagesMixin:
         audio_chunk_idx = 0
         bs_chunk_idx = 0
 
-        bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 200) or 200)
+        # Fix 1: default lowered from 200 ms to 150 ms so the minimum window
+        # aligns with 9 frames at 60 fps (~150 ms), matching extract_features.py's
+        # min_frames=9 requirement and reducing TTFB.
+        bs_min_chunk_ms = int(self.config.get("bs_min_chunk_ms", 150) or 150)
         bs_min_samples = max(1, int((self.tts.sr or 24000) * (bs_min_chunk_ms / 1000.0)))
 
         bs_buf_audio: List[np.ndarray] = []
@@ -170,6 +162,9 @@ class PipelineStagesMixin:
         bs_buf_start_time: Optional[float] = None
         bs_buf_sentence_index: Optional[int] = None
         bs_buf_sample_rate: Optional[int] = None
+
+        # Fix 4: track when the stage started for the safety timeout.
+        _stage_start = time.monotonic()
 
         async def _flush_bs_buffer():
             nonlocal bs_chunk_idx, bs_buf_audio, bs_buf_samples
@@ -246,10 +241,23 @@ class PipelineStagesMixin:
 
         try:
             while True:
+                # Fix 4: safety timeout — break out if the stage has been
+                # running for more than _BS_STAGE_TIMEOUT_S seconds.
+                if time.monotonic() - _stage_start > _BS_STAGE_TIMEOUT_S:
+                    print(
+                        f"[{datetime.now()}] [Kyutai BS] WARNING: safety timeout "
+                        f"({_BS_STAGE_TIMEOUT_S}s) exceeded — breaking out of stage loop"
+                    )
+                    break
+
                 if self._cancelled:
                     break
 
-                audio_chunk = await self._audio_queue.get()
+                try:
+                    audio_chunk = await asyncio.wait_for(self._audio_queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    print(f"[{datetime.now()}] [Kyutai BS] queue.get() timed out — TTS stage may have stalled")
+                    break
                 if audio_chunk is None:
                     break
 
@@ -282,7 +290,13 @@ class PipelineStagesMixin:
                     bs_buf_audio.append(audio_np.astype(np.float32, copy=False))
                     bs_buf_samples += int(audio_np.shape[0])
 
-                    if bs_buf_samples >= bs_min_samples:
+                    # Fix 2: flush immediately when we have enough samples AND
+                    # this is the last chunk of the current sentence (its end
+                    # timestamp reaches the cumulative audio cursor), so we don't
+                    # hold back the final blendshape packet unnecessarily.
+                    chunk_end = float(audio_chunk.start_time) + float(audio_chunk.duration)
+                    is_last_chunk = chunk_end >= self._cumulative_audio_time
+                    if bs_buf_samples >= bs_min_samples or (is_last_chunk and bs_buf_samples > 0):
                         await _flush_bs_buffer()
 
                 except Exception as e:
@@ -297,7 +311,9 @@ class PipelineStagesMixin:
             if not self._cancelled and bs_buf_samples > 0:
                 await _flush_bs_buffer()
 
-            # Flush delayed visual stream
+            # Fix 3: flush the delayed visual stream; visual_stream.flush() returns
+            # a (possibly empty) list — the loop is a no-op when the list is empty,
+            # which is correct and safe.
             for bs_chunk in self.visual_stream.flush():
                 try:
                     await self.ws.send_json(make_blendshapes_msg(

@@ -171,11 +171,3 @@ class PerformanceMonitor:
         self.e2e_latencies.clear()
         self.buffer_health_history.clear()
 
-
-# Global monitor instance
-_monitor = PerformanceMonitor()
-
-
-def get_monitor() -> PerformanceMonitor:
-    """Get the global performance monitor."""
-    return _monitor

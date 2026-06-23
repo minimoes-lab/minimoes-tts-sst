@@ -13,7 +13,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import numpy as np
 import torch
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
     # ── Init async primitives (must be inside running event loop) ────────────
     loop = asyncio.get_running_loop()
     state._voice_store_lock = asyncio.Lock()
+    state._tts_warmup_lock = asyncio.Lock()
     # Limit concurrent GPU pipelines — each ws/infer/kyutai runs LLM+TTS+BS in parallel.
     # More than 3 simultaneous pipelines saturates the GPU and causes OOM / latency spikes.
     state._gpu_semaphore = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_PIPELINES", "3")))
@@ -144,6 +145,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[{datetime.now()}] STT warmup failed (non-fatal): {e}")
 
+    if not os.getenv("GROQ_API_KEY"):
+        print(f"[{datetime.now()}] WARNING: GROQ_API_KEY is not set — LLM inference will fail. Set it in pod environment variables.")
+    if not os.getenv("RUNPOD_API_KEY"):
+        print(f"[{datetime.now()}] WARNING: RUNPOD_API_KEY is not set — all API endpoints are unprotected (dev mode).")
+
     print(f"[{datetime.now()}] Startup complete. All models ready.")
 
     # Background task: purge expired RAG sessions every 30 minutes
@@ -198,9 +204,20 @@ def health():
 
 
 # ── Audio-to-blendshapes ──────────────────────────────────────────────────────
+_MAX_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB
+
 @app.post("/audio_to_blendshapes")
 async def audio_to_blendshapes_route(request: Request):
+    content_length = request.headers.get("content-length")
+    try:
+        _cl = int(content_length) if content_length else 0
+    except ValueError:
+        _cl = 0
+    if _cl > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 10 MB limit.")
     audio_bytes = await request.body()
+    if len(audio_bytes) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 10 MB limit.")
     generated = generate_facial_data_from_bytes(audio_bytes, state.blendshape_model, device, config)
     generated_list = generated.tolist() if isinstance(generated, np.ndarray) else generated
     frames = blendshapes_to_named_frames(generated_list)
@@ -214,4 +231,17 @@ async def audio_to_blendshapes_route(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=7860, reload=False)
+    uvicorn.run(
+        "api:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "7860")),
+        reload=False,
+        # Workers: GPU models are loaded once per process via the lifespan, so running
+        # multiple workers would duplicate VRAM usage.  Default to 1; override via env
+        # if you are CPU-only or have multiple GPUs and want process-level isolation.
+        workers=int(os.getenv("UVICORN_WORKERS", "1")),
+        # Keep HTTP connections alive for 75 s (default 5 s is too short for long TTS requests).
+        timeout_keep_alive=int(os.getenv("UVICORN_KEEPALIVE", "75")),
+        # Give in-flight requests up to 30 s to finish before the process exits.
+        timeout_graceful_shutdown=int(os.getenv("UVICORN_GRACEFUL_TIMEOUT", "30")),
+    )

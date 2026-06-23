@@ -18,6 +18,11 @@ _HALLUCINATION_RE = _re.compile(r'^[\s.…\-–—*()[\]]+$')
 # Max 5 minutes of PCM16 mono 16kHz = 5*60*16000*2 bytes = 9.6 MB
 _MAX_PCM_BUFFER_BYTES = 5 * 60 * SAMPLE_RATE * 2
 
+# Sentinel events posted to the internal queue
+_EVENT_AUDIO = "audio"
+_EVENT_FLUSH = "flush"   # flush + final + exit thread
+_EVENT_STOP  = "stop"    # discard buffer + exit thread (client disconnected)
+
 
 class STTWorker:
 
@@ -58,9 +63,16 @@ class StreamingSTTSession:
     - Accumulates PCM16 chunks
     - Emits partial transcripts every ~256ms
     - Detects end-of-utterance via silence and emits final transcript
+    - stop() terminates the background thread cleanly on disconnect
     """
 
-    def __init__(self, worker: STTWorker, on_result: Callable, loop: asyncio.AbstractEventLoop, language: Optional[str] = None):
+    def __init__(
+        self,
+        worker: STTWorker,
+        on_result: Callable,
+        loop: asyncio.AbstractEventLoop,
+        language: Optional[str] = None,
+    ):
         self.worker = worker
         self.on_result = on_result
         self.loop = loop
@@ -77,10 +89,17 @@ class StreamingSTTSession:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def push_audio(self, pcm_bytes: bytes):
-        self._q.put(("audio", pcm_bytes))
+        """Enqueue raw PCM16 mono 16kHz bytes for transcription."""
+        self._q.put((_EVENT_AUDIO, pcm_bytes))
 
     def flush(self):
-        self._q.put(("flush", b""))
+        """Signal end-of-input: transcribe whatever is buffered and emit final."""
+        self._q.put((_EVENT_FLUSH, b""))
+
+    def stop(self):
+        """Terminate the background thread immediately (e.g. on client disconnect).
+        Any buffered audio is discarded — no final result is emitted."""
+        self._q.put((_EVENT_STOP, b""))
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -97,6 +116,9 @@ class StreamingSTTSession:
 
     def _transcribe_buffer(self, is_final: bool):
         if not self._pcm_buffer:
+            if is_final:
+                # Still need to emit a final so the router's done_event fires.
+                self._emit({"type": "final", "text": ""})
             return
         audio = self._pcm_to_float32(self._pcm_buffer)
         try:
@@ -105,17 +127,15 @@ class StreamingSTTSession:
             self._emit({"type": "error", "text": "", "error": str(e)})
             return
 
-        if not text:
-            return
-
         if is_final:
+            # Always emit final (even empty) so the router's done_event fires.
             self._emit({"type": "final", "text": text})
             self._pcm_buffer = b""
             self._last_partial = ""
             self._silence_count = 0
             self._chunk_count = 0
         else:
-            if text != self._last_partial:
+            if text and text != self._last_partial:
                 self._last_partial = text
                 self._emit({"type": "partial", "text": text})
 
@@ -123,15 +143,20 @@ class StreamingSTTSession:
         while True:
             try:
                 event, data = self._q.get(timeout=1.0)
-            except Exception:
-                # Timeout or queue error — check if we should keep waiting
+            except queue.Empty:
+                # No data yet — keep waiting.  Do NOT loop forever without
+                # this timeout-based yield; it would peg a CPU core.
                 continue
 
-            if event == "flush":
-                self._transcribe_buffer(is_final=True)
-                break
+            if event == _EVENT_STOP:
+                # Client disconnected — discard buffer and exit cleanly.
+                return
 
-            # event == "audio"
+            if event == _EVENT_FLUSH:
+                self._transcribe_buffer(is_final=True)
+                return
+
+            # event == _EVENT_AUDIO
             # Cap buffer to prevent OOM on long/abandoned sessions
             if len(self._pcm_buffer) + len(data) > _MAX_PCM_BUFFER_BYTES:
                 # Drop oldest data to make room (keep most recent audio)
@@ -150,6 +175,9 @@ class StreamingSTTSession:
             # End-of-utterance: enough silence after some speech
             if self._silence_count >= SILENCE_CHUNKS and len(self._pcm_buffer) > SAMPLE_RATE * 2 * 0.3:
                 self._transcribe_buffer(is_final=True)
+                # After auto-final, reset state and keep listening for more audio.
+                # (The thread does NOT exit here; the session stays alive until
+                # a flush or stop event is received.)
                 continue
 
             # Emit partial every N chunks

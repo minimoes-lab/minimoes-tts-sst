@@ -7,15 +7,20 @@ services:
     ports:
       - "7860:7860"
     environment:
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - STT_MODEL_SIZE=${STT_MODEL_SIZE:-base}
+      - MAX_CONCURRENT_PIPELINES=${MAX_CONCURRENT_PIPELINES:-3}
+      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-7200}
+      - ENABLE_TORCH_COMPILE=${ENABLE_TORCH_COMPILE:-1}
       - TOKENIZERS_PARALLELISM=false
       - PYTHONUNBUFFERED=1
     volumes:
       # Mount for demo outputs
       - ./demo_outputs:/app/demo_outputs
       - ./generated_audio:/app/generated_audio
-      # Cache ModelScope models locally to avoid re-downloading
-      - ./modelscope_cache:/root/.cache/modelscope
+      # Cache ModelScope models locally — /tmp is writable by non-root appuser
+      - ./modelscope_cache:/tmp/modelscope_cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7860/health"]

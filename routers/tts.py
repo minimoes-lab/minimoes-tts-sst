@@ -27,29 +27,41 @@ def _is_valid_wav(data: bytes) -> bool:
 
 @router.post("/tts/warmup")
 async def tts_warmup():
+    # Fast-path: already warmed, no lock needed for read
     with state._tts_worker_lock:
         if state._tts_model_worker is not None:
             return {"status": "ok", "warmed": True}
 
-    device_str = "cuda" if torch.cuda.is_available() else "cpu"
-    loop = asyncio.get_running_loop()
+    # Slow-path: serialise concurrent warmup calls so only one build runs at a time
+    warmup_lock = state._tts_warmup_lock
+    if warmup_lock is None:
+        return {"status": "error", "warmed": False, "error": "Service not initialised yet"}
 
-    def _build():
-        return QwenTTSWorker(
-            device=device_str,
-            use_qwen3=True,
-            reference_audio_path=None,
-            reference_text=None,
-            raise_on_error=True,
-        )
+    async with warmup_lock:
+        # Re-check inside lock — another caller may have finished while we waited
+        with state._tts_worker_lock:
+            if state._tts_model_worker is not None:
+                return {"status": "ok", "warmed": True}
 
-    worker = await loop.run_in_executor(None, _build)
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        loop = asyncio.get_running_loop()
 
-    if not worker.model_loaded:
-        return {"status": "error", "warmed": False, "error": "Model failed to load, check logs"}
+        def _build():
+            return QwenTTSWorker(
+                device=device_str,
+                use_qwen3=True,
+                reference_audio_path=None,
+                reference_text=None,
+                raise_on_error=True,
+            )
 
-    with state._tts_worker_lock:
-        state._tts_model_worker = worker
+        worker = await loop.run_in_executor(None, _build)
+
+        if not worker.model_loaded:
+            return {"status": "error", "warmed": False, "error": "Model failed to load, check logs"}
+
+        with state._tts_worker_lock:
+            state._tts_model_worker = worker
 
     return {"status": "ok", "warmed": True}
 
@@ -64,6 +76,11 @@ async def set_tts_reference_audio(
         raise HTTPException(status_code=400, detail="Missing audio file")
     if not text or not text.strip():
         raise HTTPException(status_code=400, detail="Missing reference text")
+    if len(text) > 2000:
+        raise HTTPException(status_code=400, detail="Reference text too long (max 2000 chars)")
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_-]{1,64}$', voice_id):
+        raise HTTPException(status_code=400, detail="voice_id must be alphanumeric, underscore, or hyphen (max 64 chars)")
 
     filename = (audio.filename or "").lower()
     if filename and not filename.endswith(".wav"):
@@ -106,7 +123,7 @@ async def set_tts_reference_audio(
     try:
         prompt = model_worker.create_voice_clone_prompt(ref_path, text.strip())
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to build voice clone prompt: {e}")
+        raise HTTPException(status_code=400, detail="Failed to build voice clone prompt")
 
     async with state._voice_store_lock:
         # Remove old WAV file for this voice_id before replacing it
@@ -132,17 +149,19 @@ async def set_tts_reference_audio(
     return {
         "status": "ok",
         "reference_configured": True,
-        "reference_audio_path": ref_path,
         "voice_id": str(voice_id),
     }
 
 
 @router.get("/tts/speakers")
-def get_tts_speakers():
+async def get_tts_speakers():
+    async with state._voice_store_lock:
+        voice_ids = sorted(list(state._voice_store.keys()))
+        reference_configured = bool(state._tts_reference_audio_path) and bool(state._tts_reference_text)
     return {
         "speakers": [],
         "default_speaker": None,
         "tts_mode": "base_voice_clone",
-        "reference_configured": bool(state._tts_reference_audio_path) and bool(state._tts_reference_text),
-        "voice_ids": sorted(list(state._voice_store.keys())),
+        "reference_configured": reference_configured,
+        "voice_ids": voice_ids,
     }

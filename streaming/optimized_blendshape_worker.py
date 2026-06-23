@@ -2,6 +2,7 @@
 Optimized blendshape worker with batching and quantization support.
 """
 import asyncio
+import concurrent.futures
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List
@@ -45,7 +46,17 @@ class OptimizedBlendshapeWorker:
         self._batch_size = config.get("batch_size", 1)
         self._cache_enabled = config.get("cache_blendshapes", True)
         self._frame_cache = {}
-        
+
+        # Dedicated single-thread executor for blendshape GPU inference.
+        # torch.compile CUDA graphs are thread-local; running inference from the
+        # default ThreadPoolExecutor (multiple threads) on a compiled model causes
+        # CUDA context corruption on concurrent requests. A single persistent thread
+        # serialises all GPU work safely — same pattern as QwenTTSWorker._shared_executor.
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="bs_gpu"
+        )
+        self._executor.submit(lambda: None).result()  # pre-warm the thread
+
         # Apply optimizations
         self._optimize_model()
     
@@ -86,7 +97,7 @@ class OptimizedBlendshapeWorker:
         
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            None, self._process_sync, audio_chunk
+            self._executor, self._process_sync, audio_chunk
         )
         return result
 
@@ -99,7 +110,7 @@ class OptimizedBlendshapeWorker:
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            None, self._process_batch_sync, audio_chunks
+            self._executor, self._process_batch_sync, audio_chunks
         )
         return result
     
