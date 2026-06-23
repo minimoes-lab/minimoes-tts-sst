@@ -162,8 +162,12 @@ class QwenTTSModelMixin:
 
             # Build voice clone prompt if provided
             if self.reference_audio_path and self.reference_text:
+                import soundfile as sf
+                _ref_audio, _ref_sr = sf.read(self.reference_audio_path, dtype="float32", always_2d=False)
+                if _ref_audio.ndim > 1:
+                    _ref_audio = _ref_audio.mean(axis=1)
                 self.voice_clone_prompt = self.model.create_voice_clone_prompt(
-                    ref_audio=self.reference_audio_path,
+                    ref_audio=(_ref_audio, _ref_sr),
                     ref_text=self.reference_text,
                 )
 
@@ -185,22 +189,10 @@ class QwenTTSModelMixin:
                     # Synthetic 1s silence warmup so CUDA graphs are recorded at startup
                     if warmup_prompt is None and hasattr(self.model, "create_voice_clone_prompt"):
                         try:
-                            import struct
-                            import tempfile
                             _sr_w = 24000
-                            _n_w = _sr_w
-                            _wav_header = struct.pack(
-                                "<4sI4s4sIHHIIHH4sI",
-                                b"RIFF", 36 + _n_w * 2, b"WAVE",
-                                b"fmt ", 16, 1, 1, _sr_w, _sr_w * 2, 2, 16,
-                                b"data", _n_w * 2,
-                            )
-                            _wav_data = b"\x00" * (_n_w * 2)
-                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as _f:
-                                _f.write(_wav_header + _wav_data)
-                                _syn_path = _f.name
+                            _silence = np.zeros(_sr_w, dtype=np.float32)
                             warmup_prompt = self.model.create_voice_clone_prompt(
-                                ref_audio=_syn_path,
+                                ref_audio=(_silence, _sr_w),
                                 ref_text="Hello, this is a warmup.",
                             )
                             print(f"[{datetime.now()}] [Qwen TTS] Synthetic warmup prompt created")
@@ -262,7 +254,11 @@ class QwenTTSModelMixin:
     def create_voice_clone_prompt(self, ref_audio_path: str, ref_text: str):
         if self.model is None or not self.model_loaded:
             raise RuntimeError("Model not loaded")
-        return self.model.create_voice_clone_prompt(ref_audio=ref_audio_path, ref_text=ref_text)
+        import soundfile as sf
+        audio_np, sr = sf.read(ref_audio_path, dtype="float32", always_2d=False)
+        if audio_np.ndim > 1:
+            audio_np = audio_np.mean(axis=1)
+        return self.model.create_voice_clone_prompt(ref_audio=(audio_np, sr), ref_text=ref_text)
 
     def cancel(self):
         """Cancel ongoing generation."""
