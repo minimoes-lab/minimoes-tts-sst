@@ -7,7 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
     NUMBA_DISABLE_CACHE=1 \
     TOKENIZERS_PARALLELISM=false \
     PYTHONDONTWRITEBYTECODE=1 \
-    MODELSCOPE_CACHE=/tmp/modelscope_cache
+    MODELSCOPE_CACHE=/tmp/modelscope_cache \
+    HF_HOME=/tmp/hf_cache
 
 WORKDIR /app
 
