@@ -3,8 +3,7 @@ import json
 import os
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
-from starlette.status import WS_1008_POLICY_VIOLATION
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 import core.state as state
 from streaming.stt_worker import STTWorker, StreamingSTTSession
@@ -24,16 +23,6 @@ _SESSION_MAX_DURATION = 600.0
 # After sending {type:'stop'}, how long to wait for the transcription thread (seconds).
 _FLUSH_TIMEOUT = 10.0
 
-
-async def _require_ws_token(
-    token: Annotated[Optional[str], Query()] = None,
-) -> str:
-    """Reject the WebSocket handshake before accept() if the token is wrong."""
-    if not _API_KEY:
-        return ""  # auth disabled when no key is configured (dev mode)
-    if token != _API_KEY:
-        raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason="Invalid or missing token")
-    return token
 
 
 def _get_stt_worker() -> STTWorker:
@@ -60,7 +49,7 @@ async def stt_warmup():
 @router.websocket("/ws/stt")
 async def websocket_stt(
     websocket: WebSocket,
-    _token: Annotated[str, Depends(_require_ws_token)],
+    token: Annotated[Optional[str], Query()] = None,
 ):
     """
     Real-time streaming STT via WebSocket.
@@ -72,8 +61,14 @@ async def websocket_stt(
       4. Receive: {"type": "partial", "text": "..."} — incremental results
          Receive: {"type": "final",   "text": "..."} — end-of-utterance result
       5. Send: {"type": "stop"} to flush and close
+
+    Auth: token validated after accept() so RunPod proxy can forward the handshake.
     """
     await websocket.accept()
+    # Validate token after accept — RunPod proxy rejects pre-upgrade 403 on some paths
+    if _API_KEY and token != _API_KEY:
+        await websocket.close(code=1008, reason="Invalid or missing token")
+        return
 
     # ── done_event: set by the STT thread when it has emitted its final result ──
     done_event = asyncio.Event()

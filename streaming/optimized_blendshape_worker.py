@@ -12,7 +12,7 @@ import torch
 
 from streaming.qwen_tts_worker import AudioChunk
 
-BLEND_FRAMES = 8
+BLEND_FRAMES = 4
 
 
 @dataclass
@@ -192,13 +192,20 @@ class OptimizedBlendshapeWorker:
                 self._previous_tail_frames = blendshapes[-BLEND_FRAMES:].copy()
             
             frame_rate = self.config.get("frame_rate", 60)
+            expected_frames = int(np.ceil(audio_chunk.duration * frame_rate))
+            if expected_frames > 0 and len(blendshapes) != expected_frames:
+                if len(blendshapes) < expected_frames:
+                    pad = np.tile(blendshapes[-1:], (expected_frames - len(blendshapes), 1))
+                    blendshapes = np.vstack([blendshapes, pad])
+                else:
+                    blendshapes = blendshapes[:expected_frames]
             duration = len(blendshapes) / frame_rate
-            
+
             print(
                 f"[{datetime.now()}] [BS Worker] Sentence "
                 f"{audio_chunk.sentence_index}: {len(blendshapes)} frames"
             )
-            
+
             return BlendshapeChunk(
                 sentence_index=audio_chunk.sentence_index,
                 frames=blendshapes,

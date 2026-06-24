@@ -147,15 +147,35 @@ def process_audio_features(audio_features, model, device, config, apply_easing=T
     # Normalize or apply any post-processing
     final_decoded_outputs = ensure_2d(final_decoded_outputs)
     
-    # Get blendshape_divisor from config (default 65.0)
-    blendshape_divisor = float(config.get('blendshape_divisor', 65.0))
+    # Get blendshape_divisor from config (default 55.0)
+    blendshape_divisor = float(config.get('blendshape_divisor', 55.0))
     if blendshape_divisor > 0:
         final_decoded_outputs[:, :61] /= blendshape_divisor
-    
+
+    # Per-coefficient boost for key phonetic blendshapes (applied before clamp
+    # so the full dynamic range is preserved — standard practice per Apple ARKit
+    # and Unreal MetaHuman per-blendshape calibration, range 0.8-1.2)
+    # 17=jawOpen, 18=mouthClose, 19=mouthFunnel, 20=mouthPucker,
+    # 31=mouthRollLower, 32=mouthRollUpper, 37=mouthLowerDownLeft, 38=mouthLowerDownRight
+    _PHONETIC_BOOST_INDICES = [17, 18, 19, 20, 31, 32, 37, 38]
+    _PHONETIC_BOOST_FACTOR = 1.2
+    final_decoded_outputs[:, _PHONETIC_BOOST_INDICES] *= _PHONETIC_BOOST_FACTOR
+
     # Clamp blendshape values to [0, 1] for ARKit compatibility
     clamp = bool(config.get('clamp_blendshapes', True))
     if clamp:
         final_decoded_outputs = np.clip(final_decoded_outputs, 0.0, 1.0)
+
+    # Temporal smoothing — EMA (exponential moving average) at alpha=0.6
+    # Removes per-frame jitter without smearing phonemes (standard practice
+    # in Audio2Face, FaceFormer, and real-time face pipelines; cutoff ~14Hz at 60fps)
+    _EMA_ALPHA = 0.6
+    if final_decoded_outputs.shape[0] > 1:
+        for i in range(1, final_decoded_outputs.shape[0]):
+            final_decoded_outputs[i] = (
+                _EMA_ALPHA * final_decoded_outputs[i]
+                + (1 - _EMA_ALPHA) * final_decoded_outputs[i - 1]
+            )
 
     # Easing effect for smooth start (fades in first 0.05 seconds)
     if apply_easing:
