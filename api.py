@@ -39,7 +39,7 @@ model_path = "utils/model/model.pth"
 _HTTP_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 
 # Endpoints that must stay public (health checks, WebSocket handshakes handled by their own auth)
-_PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai"}
+_PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai", "/ping"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -200,6 +200,12 @@ def root():
 
 @app.get("/health")
 def health():
+    return {"status": "healthy"}
+
+
+@app.get("/ping")
+def ping():
+    """Required by RunPod Load Balancer health checks."""
     return {"status": "healthy"}
 
 

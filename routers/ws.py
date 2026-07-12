@@ -4,8 +4,8 @@ from datetime import datetime
 from typing import Annotated, Optional
 
 import torch
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, WebSocketException
-from starlette.status import HTTP_403_FORBIDDEN, WS_1008_POLICY_VIOLATION
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, WebSocketException
+from starlette.status import WS_1008_POLICY_VIOLATION
 
 import core.state as state
 from streaming.kyutai_coordinator import KyutaiStreamCoordinator
@@ -16,17 +16,6 @@ from utils.config import config
 router = APIRouter()
 
 _API_KEY = os.getenv("RUNPOD_API_KEY", "")
-
-
-async def _require_api_key(
-    token: Annotated[Optional[str], Query()] = None,
-) -> str:
-    """Reject HTTP requests with 403 if the API key is wrong."""
-    if not _API_KEY:
-        return ""  # auth disabled when no key is configured (dev mode)
-    if token != _API_KEY:
-        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid or missing API key")
-    return token
 
 
 async def _require_ws_token(
