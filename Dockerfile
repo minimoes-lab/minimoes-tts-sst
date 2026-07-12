@@ -7,10 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
     NUMBA_CACHE_DIR=/tmp/numba_cache \
     TOKENIZERS_PARALLELISM=false \
     PYTHONDONTWRITEBYTECODE=1 \
-    MODELSCOPE_CACHE=/tmp/modelscope_cache \
-    HF_HOME=/tmp/hf_cache \
+    MODELSCOPE_CACHE=/app/.cache/modelscope \
+    HF_HOME=/app/.cache/huggingface \
     HOME=/tmp \
-    TORCH_HOME=/tmp/torch_cache \
+    TORCH_HOME=/app/.cache/torch \
     TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache \
     XDG_CACHE_HOME=/tmp/xdg_cache \
     TRITON_CACHE_DIR=/tmp/triton_cache
@@ -41,17 +41,20 @@ RUN pip install --upgrade pip \
 
 COPY . /app
 
-# Blendshape model is downloaded at runtime on first startup (see load_models in api.py)
-RUN mkdir -p utils/model
+# Download blendshape model at build time so it's baked into the image
+RUN mkdir -p utils/model && \
+    wget -q --timeout=120 -O utils/model/model.pth \
+    "https://huggingface.co/KKKONNK/model/resolve/main/model.pth" && \
+    echo "Blendshape model: $(wc -c < utils/model/model.pth) bytes"
 
-RUN mkdir -p /app/generated_audio /app/demo_outputs
+RUN mkdir -p /app/generated_audio /app/demo_outputs /app/.cache/huggingface /app/.cache/torch /app/.cache/modelscope
 
 RUN chmod +x /app/*.py || true
 
 # Non-root user for security
 RUN groupadd --system --gid 1001 appgroup \
  && useradd --system --uid 1001 --gid appgroup --no-create-home appuser \
- && chown -R appuser:appgroup /app
+ && chown -R appuser:appgroup /app /app/.cache
 
 USER appuser
 
