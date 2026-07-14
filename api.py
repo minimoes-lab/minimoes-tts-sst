@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 import core.state as state
-from routers import rag, stt, tts, ws
+from routers import infer, rag, stt, tts, ws
 from utils.config import blendshapes_to_named_frames, config, get_blendshape_names
 from utils.generate_face_shapes import generate_facial_data_from_bytes
 from utils.model.model import load_model
@@ -39,7 +39,7 @@ model_path = "utils/model/model.pth"
 _HTTP_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 
 # Endpoints that must stay public (health checks, WebSocket handshakes handled by their own auth)
-_PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai", "/ping"}
+_PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai", "/ws/infer/sentence", "/ping"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -185,6 +185,7 @@ app.include_router(rag.router)
 app.include_router(tts.router)
 app.include_router(stt.router)
 app.include_router(ws.router)
+app.include_router(infer.router)
 
 # ── Static files ──────────────────────────────────────────────────────────────
 STATIC_AUDIO_DIR = "generated_audio"

@@ -38,7 +38,7 @@ sentence-transformers>=2.3.0
 huggingface-hub>=0.34.0
 
 # TTS engines
-openai>=1.0.0
+soundfile>=0.12.0
 accelerate==1.12.0
 safetensors
 

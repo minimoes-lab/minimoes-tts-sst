@@ -213,10 +213,11 @@ async def _astream_with_timeout(aiter, timeout: float):
             await queue.put(_sentinel)
 
     producer_task = asyncio.ensure_future(_producer())
-    deadline = asyncio.get_event_loop().time() + timeout
+    _loop = asyncio.get_running_loop()
+    deadline = _loop.time() + timeout
     try:
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - _loop.time()
             if remaining <= 0:
                 raise asyncio.TimeoutError()
             item = await asyncio.wait_for(queue.get(), timeout=remaining)

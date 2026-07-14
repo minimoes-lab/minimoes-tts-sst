@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import os
+import pickle
 import uuid
 
 import torch
@@ -71,6 +73,7 @@ async def set_tts_reference_audio(
     audio: UploadFile = File(...),
     text: str = Form(...),
     voice_id: str = Form("default"),
+    return_prompt_b64: str = Form("0"),
 ):
     if audio is None:
         raise HTTPException(status_code=400, detail="Missing audio file")
@@ -148,11 +151,21 @@ async def set_tts_reference_audio(
             state._tts_reference_audio_path = ref_path
             state._tts_reference_text = text.strip()
 
-    return {
+    response: dict = {
         "status": "ok",
         "reference_configured": True,
         "voice_id": str(voice_id),
     }
+
+    # Relay requests the serialized prompt so it can forward it per-sentence
+    if return_prompt_b64.strip() in ("1", "true", "True"):
+        try:
+            prompt_bytes = pickle.dumps(prompt)
+            response["prompt_b64"] = base64.b64encode(prompt_bytes).decode()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to serialize voice prompt: {e}")
+
+    return response
 
 
 @router.get("/tts/speakers")
