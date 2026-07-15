@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from docx import Document
 from pptx import Presentation
 import zipfile
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 from pydantic import BaseModel, Field
