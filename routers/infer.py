@@ -58,66 +58,57 @@ async def _send(ws: WebSocket, msg: dict):
 
 
 async def _handle_generate_prompt(websocket: WebSocket, data: dict):
-    """Handle voice prompt generation via WebSocket (RunPod Serverless compat)."""
+    """Generate voice clone prompt via WebSocket (RunPod Serverless compatible)."""
+    import os
+    import tempfile
+
     audio_b64 = data.get("audio")
-    text = str(data.get("text", "")[:4000])
-    voice_id = str(data.get("voice_id", "default")[:64])
-    
-    if not audio_b64:
-        await _send(websocket, {"type": "error", "message": "audio is required"})
+    text = str(data.get("text") or "")[:2000].strip()
+    voice_id = str(data.get("voice_id") or "default")[:64]
+
+    if not audio_b64 or not text:
+        await _send(websocket, {"type": "error", "message": "audio and text are required"})
         await websocket.close()
         return
-    
-    if not text:
-        await _send(websocket, {"type": "error", "message": "text is required"})
-        await websocket.close()
-        return
-    
-    # Decode audio
+
     try:
-        audio_bytes = base64.b64decode(audio_b64)
-        audio_np, sr = wavfile.read(io.BytesIO(audio_bytes))
-        if sr != 24000:
-            # Resample to 24kHz if needed
-            import librosa
-            audio_np = librosa.resample(audio_np.astype(np.float32), orig_sr=sr, target_sr=24000)
-            sr = 24000
-        audio_np = audio_np.astype(np.float32) / 32767.0
+        wav_data = base64.b64decode(audio_b64)
     except Exception as e:
-        await _send(websocket, {"type": "error", "message": f"Invalid audio: {e}"})
+        await _send(websocket, {"type": "error", "message": f"Invalid base64: {e}"})
         await websocket.close()
         return
-    
-    # Validate TTS model
+
+    if len(wav_data) < 12 or wav_data[:4] != b"RIFF" or wav_data[8:12] != b"WAVE":
+        await _send(websocket, {"type": "error", "message": "Invalid WAV data"})
+        await websocket.close()
+        return
+
     tts_worker = state._tts_model_worker
     if tts_worker is None:
-        await _send(websocket, {"type": "error", "message": "TTS model not warmed — call /tts/warmup first"})
+        await _send(websocket, {"type": "error", "message": "TTS model not warmed"})
         await websocket.close()
         return
-    
-    # Generate voice prompt
+
+    tmp_path = None
     try:
-        voice_prompt = tts_worker.generate_voice_prompt(audio_np, text)
-        if voice_prompt is None:
-            await _send(websocket, {"type": "error", "message": "Failed to generate voice prompt"})
-            await websocket.close()
-            return
-        
-        # Encode to base64
-        prompt_bytes = pickle.dumps(voice_prompt)
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        os.write(fd, wav_data)
+        os.close(fd)
+
+        loop = asyncio.get_running_loop()
+        prompt = await loop.run_in_executor(
+            None, tts_worker.create_voice_clone_prompt, tmp_path, text
+        )
+
+        prompt_bytes = pickle.dumps(prompt)
         prompt_b64 = base64.b64encode(prompt_bytes).decode()
-        
-        # Store in voice store
-        entry = {"prompt": voice_prompt, "text": text, "is_preset": True}
-        async with state._voice_store_lock:
-            state.voice_store[voice_id] = entry
-        
-        await _send(websocket, {"type": "success", "prompt_b64": prompt_b64})
+        await _send(websocket, {"type": "prompt_ready", "voice_id": voice_id, "prompt_b64": prompt_b64})
     except Exception as e:
-        print(f"[{datetime.now()}] [/ws/infer/sentence] generate_prompt ERROR: {e}")
-        import traceback; traceback.print_exc()
+        print(f"[{datetime.now()}] generate_prompt error: {e}")
         await _send(websocket, {"type": "error", "message": str(e)})
     finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         try:
             await websocket.close()
         except Exception:
