@@ -11,6 +11,11 @@ Protocol:
                    {"type": "blendshapes", ...}    (multiple, via make_blendshapes_msg)
                    {"type": "done"}
                    {"type": "error", "message": "..."}
+
+  Voice prompt generation (RunPod Serverless compat):
+  Client → Worker: {"type": "generate_prompt", "audio": "...", "text": "...", "voice_id": "..."}
+  Worker → Client: {"type": "success", "prompt_b64": "..."}
+                   {"type": "error", "message": "..."}
 """
 import asyncio
 import base64
@@ -52,6 +57,73 @@ async def _send(ws: WebSocket, msg: dict):
         pass
 
 
+async def _handle_generate_prompt(websocket: WebSocket, data: dict):
+    """Handle voice prompt generation via WebSocket (RunPod Serverless compat)."""
+    audio_b64 = data.get("audio")
+    text = str(data.get("text", "")[:4000])
+    voice_id = str(data.get("voice_id", "default")[:64])
+    
+    if not audio_b64:
+        await _send(websocket, {"type": "error", "message": "audio is required"})
+        await websocket.close()
+        return
+    
+    if not text:
+        await _send(websocket, {"type": "error", "message": "text is required"})
+        await websocket.close()
+        return
+    
+    # Decode audio
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+        audio_np, sr = wavfile.read(io.BytesIO(audio_bytes))
+        if sr != 24000:
+            # Resample to 24kHz if needed
+            import librosa
+            audio_np = librosa.resample(audio_np.astype(np.float32), orig_sr=sr, target_sr=24000)
+            sr = 24000
+        audio_np = audio_np.astype(np.float32) / 32767.0
+    except Exception as e:
+        await _send(websocket, {"type": "error", "message": f"Invalid audio: {e}"})
+        await websocket.close()
+        return
+    
+    # Validate TTS model
+    tts_worker = state._tts_model_worker
+    if tts_worker is None:
+        await _send(websocket, {"type": "error", "message": "TTS model not warmed — call /tts/warmup first"})
+        await websocket.close()
+        return
+    
+    # Generate voice prompt
+    try:
+        voice_prompt = tts_worker.generate_voice_prompt(audio_np, text)
+        if voice_prompt is None:
+            await _send(websocket, {"type": "error", "message": "Failed to generate voice prompt"})
+            await websocket.close()
+            return
+        
+        # Encode to base64
+        prompt_bytes = pickle.dumps(voice_prompt)
+        prompt_b64 = base64.b64encode(prompt_bytes).decode()
+        
+        # Store in voice store
+        entry = {"prompt": voice_prompt, "text": text, "is_preset": True}
+        async with state._voice_store_lock:
+            state.voice_store[voice_id] = entry
+        
+        await _send(websocket, {"type": "success", "prompt_b64": prompt_b64})
+    except Exception as e:
+        print(f"[{datetime.now()}] [/ws/infer/sentence] generate_prompt ERROR: {e}")
+        import traceback; traceback.print_exc()
+        await _send(websocket, {"type": "error", "message": str(e)})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/ws/infer/sentence")
 async def ws_infer_sentence(websocket: WebSocket):
     await websocket.accept()
@@ -74,6 +146,11 @@ async def ws_infer_sentence(websocket: WebSocket):
         await websocket.close()
         return
     except WebSocketDisconnect:
+        return
+
+    # ── generate_prompt: create voice clone prompt via WebSocket (RunPod Serverless compat)
+    if data.get("type") == "generate_prompt":
+        await _handle_generate_prompt(websocket, data)
         return
 
     sentence: str = str(data.get("sentence") or "")[:500]
