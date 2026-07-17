@@ -46,6 +46,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     """Require Authorization: Bearer <RUNPOD_API_KEY> on all non-public HTTP endpoints."""
 
     async def dispatch(self, request: Request, call_next):
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
         if not _HTTP_API_KEY:
             return await call_next(request)  # auth disabled in dev (no key set)
         if request.url.path in _PUBLIC_PATHS:
