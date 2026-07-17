@@ -16,8 +16,8 @@ import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 import core.state as state
 from routers import infer, rag, stt, tts, ws
@@ -42,24 +42,36 @@ _HTTP_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 _PUBLIC_PATHS = {"/", "/health", "/ws/stt", "/ws/infer/kyutai", "/ws/infer/sentence", "/ping"}
 
 
-class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Require Authorization: Bearer <RUNPOD_API_KEY> on all non-public HTTP endpoints."""
+class APIKeyMiddleware:
+    """Pure ASGI middleware — skips WebSocket entirely, checks Bearer token on HTTP."""
 
-    async def dispatch(self, request: Request, call_next):
-        if request.scope.get("type") == "websocket":
-            return await call_next(request)
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         if not _HTTP_API_KEY:
-            return await call_next(request)  # auth disabled in dev (no key set)
-        if request.url.path in _PUBLIC_PATHS:
-            return await call_next(request)
-        auth = request.headers.get("Authorization", "")
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path in _PUBLIC_PATHS:
+            await self.app(scope, receive, send)
+            return
+        headers = dict(
+            (k.decode(), v.decode()) for k, v in scope.get("headers", [])
+        )
+        auth = headers.get("authorization", "")
         if auth != f"Bearer {_HTTP_API_KEY}":
-            return Response(
+            response = Response(
                 content='{"detail":"Unauthorized"}',
                 status_code=401,
                 media_type="application/json",
             )
-        return await call_next(request)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
