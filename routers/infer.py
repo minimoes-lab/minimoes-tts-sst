@@ -119,14 +119,17 @@ async def _handle_generate_prompt(websocket: WebSocket, data: dict):
 async def ws_infer_sentence(websocket: WebSocket):
     await websocket.accept()
 
-    # Auth: check Bearer token from HTTP upgrade headers (relay sends it via additional_headers)
+    # Auth: check token from query param (proxy doesn't forward Authorization header on WS upgrade)
     _api_key = state._http_api_key if hasattr(state, "_http_api_key") else ""
     if not _api_key:
         import os
         _api_key = os.getenv("RUNPOD_API_KEY", "")
     if _api_key:
-        auth = websocket.headers.get("Authorization", "")
-        if auth != f"Bearer {_api_key}":
+        token = websocket.query_params.get("token", "")
+        if not token:
+            auth = websocket.headers.get("Authorization", "")
+            token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+        if token != _api_key:
             await websocket.close(code=1008, reason="Unauthorized")
             return
 
