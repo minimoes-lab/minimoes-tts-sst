@@ -180,6 +180,9 @@ app = FastAPI(
 
 app.add_middleware(APIKeyMiddleware)
 
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(rag.router)
 app.include_router(tts.router)
